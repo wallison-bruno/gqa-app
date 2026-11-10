@@ -1,6 +1,7 @@
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import * as WebBrowser from 'expo-web-browser';
 import { useEffect } from 'react';
 import { useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -10,6 +11,8 @@ import { AppProvider, useApp } from '@/context/AppContext';
 import { darkTheme, lightTheme } from '@/theme/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
+// Necessário na web: fecha o popup do OAuth quando a página de retorno carrega.
+WebBrowser.maybeCompleteAuthSession();
 
 function Navigator() {
   const { ready, session } = useApp();
@@ -26,12 +29,18 @@ function Navigator() {
     <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
       <Stack.Protected guard={!isLoggedIn}>
         <Stack.Screen name="login" options={{ animation: 'fade' }} />
+        <Stack.Screen name="signup" />
+        <Stack.Screen name="forgot-password" />
+        <Stack.Screen name="auth/confirm" options={{ animation: 'fade' }} />
+        <Stack.Screen name="auth/google" options={{ animation: 'fade' }} />
       </Stack.Protected>
       <Stack.Protected guard={isLoggedIn}>
         <Stack.Screen name="index" />
         <Stack.Screen name="quiz/[documentId]" />
         <Stack.Screen name="settings" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
       </Stack.Protected>
+      {/* Redefinição de senha pode ser aberta mesmo já autenticado */}
+      <Stack.Screen name="reset-password" options={{ animation: 'fade' }} />
     </Stack>
   );
 }

@@ -7,7 +7,7 @@ import styled, { useTheme } from 'styled-components/native';
 import { Button } from '@/components/Button';
 import { AppHeader, Card, FooterInner, Screen, SectionTitle } from '@/components/Layout';
 import { useApp } from '@/context/AppContext';
-import { checkHealth, getDefaultApiUrl, normalizeBaseUrl } from '@/services/api';
+import { checkHealth, getDefaultApiUrl, getLocalApiUrl, normalizeBaseUrl } from '@/services/api';
 import type { ApiError } from '@/services/api';
 import * as haptics from '@/utils/haptics';
 
@@ -68,7 +68,7 @@ export default function SettingsScreen() {
             setUrlInput(t);
             setTest({ status: 'idle' });
           }}
-          placeholder="http://192.168.0.10:3000"
+          placeholder="https://gqa-backend.onrender.com"
           placeholderTextColor={theme.colors.textMuted}
           autoCapitalize="none"
           autoCorrect={false}
@@ -76,8 +76,8 @@ export default function SettingsScreen() {
           accessibilityLabel="Endereço da API"
         />
         <Hint>
-          Em celular físico use o IP do seu computador na rede Wi-Fi. No emulador Android use 10.0.2.2 e, no
-          simulador iOS, localhost.
+          Padrão: servidor em produção ({getDefaultApiUrl()}). Para testar com a API local, toque em “Local” (celular
+          físico: IP do seu computador na mesma rede Wi-Fi; emulador Android: 10.0.2.2).
         </Hint>
 
         <Row>
@@ -96,6 +96,16 @@ export default function SettingsScreen() {
               variant="ghost"
               onPress={() => {
                 setUrlInput(getDefaultApiUrl());
+                setTest({ status: 'idle' });
+              }}
+            />
+          </View>
+          <View>
+            <Button
+              label="Local"
+              variant="ghost"
+              onPress={() => {
+                setUrlInput(getLocalApiUrl());
                 setTest({ status: 'idle' });
               }}
             />

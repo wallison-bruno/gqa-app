@@ -20,15 +20,22 @@ export class ApiError extends Error {
 const SERVER_PORT = 3000;
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000; // indexação (embeddings) pode demorar
 const QUESTION_TIMEOUT_MS = 90 * 1000;
-const HEALTH_TIMEOUT_MS = 8 * 1000;
+const HEALTH_TIMEOUT_MS = 45 * 1000; // o Render pode levar ~30-50s para "acordar" após inatividade
+
+/** API em produção (Render). Pode ser sobrescrita com EXPO_PUBLIC_API_URL no .env.local. */
+export const PRODUCTION_API_URL = 'https://gqa-backend.onrender.com';
 
 /**
- * Endereço padrão da API.
- * - Dispositivo físico / Expo Go: usa o mesmo IP do computador que roda o Metro.
- * - Emulador Android: 10.0.2.2 aponta para o localhost do computador.
- * - iOS Simulator / Web: localhost.
+ * Endereço padrão da API: EXPO_PUBLIC_API_URL, se definida, ou o backend em produção.
+ * Para testar com o servidor local, defina EXPO_PUBLIC_API_URL=http://<IP-do-PC>:3000
+ * (ou altere nas Configurações do app).
  */
 export function getDefaultApiUrl(): string {
+  return normalizeBaseUrl(process.env.EXPO_PUBLIC_API_URL ?? '') || PRODUCTION_API_URL;
+}
+
+/** Endereço do servidor local de desenvolvimento, sugerido nas Configurações. */
+export function getLocalApiUrl(): string {
   if (Platform.OS === 'web') {
     const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
     return `http://${host || 'localhost'}:${SERVER_PORT}`;
@@ -48,7 +55,7 @@ export function normalizeBaseUrl(url: string): string {
 }
 
 const NETWORK_MESSAGE =
-  'Não foi possível conectar ao servidor. Verifique se a API está rodando e se o endereço nas configurações está correto (celular e computador na mesma rede Wi-Fi).';
+  'Não foi possível conectar ao servidor. Verifique sua conexão com a internet. Se o servidor estava inativo, ele pode levar até um minuto para acordar: tente novamente em instantes.';
 
 function extractServerMessage(body: unknown, fallback: string): string {
   if (body && typeof body === 'object' && 'error' in body) {

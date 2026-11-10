@@ -39,7 +39,18 @@
       ],
       "expo-document-picker",
       "expo-font",
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      "expo-web-browser"
+    ],
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "3bf85817-85bb-412f-b98e-3420444b2344"
+      }
+    }
   }
 }

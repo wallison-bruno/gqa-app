@@ -25,6 +25,8 @@ interface AppState {
   userId: string;
   documents: StoredDocument[];
   signIn: (email: string, password: string) => Promise<void>;
+  /** Passa a usar uma sessão já obtida (Google, confirmação de e-mail, cadastro, nova senha). */
+  adoptSession: (session: Session) => Promise<void>;
   signOut: () => Promise<void>;
   /** Retorna um access token válido (renova automaticamente se estiver para expirar). */
   getAccessToken: () => Promise<string | null>;
@@ -176,13 +178,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       userId,
       documents,
       signIn,
+      adoptSession: applySession,
       signOut,
       getAccessToken,
       saveApiUrl,
       addDocument,
       removeDocument,
     }),
-    [ready, apiUrl, session, userId, documents, signIn, signOut, getAccessToken, saveApiUrl, addDocument, removeDocument],
+    [ready, apiUrl, session, userId, documents, signIn, applySession, signOut, getAccessToken, saveApiUrl, addDocument, removeDocument],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

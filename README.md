@@ -12,13 +12,29 @@ npm start          # depois: "a" (Android), "i" (iOS) ou "w" (web) — ou escane
 Backend (`G:\Projects\gqa`): `npm start` com o `.env` preenchido (porta 3000).
 
 ### Login (Supabase Auth)
-O app autentica por e-mail/senha direto no Supabase (`/auth/v1/token?grant_type=password`), guarda a sessão no armazenamento seguro e renova o token automaticamente. O `user.id` retornado é enviado como `userId` no `/upload`, e o `access_token` vai em `Authorization: Bearer` nas chamadas à API.
+O app autentica direto no Supabase, guarda a sessão no armazenamento seguro e renova o token automaticamente. O `user.id` é enviado como `userId` no `/upload`, e o `access_token` vai em `Authorization: Bearer` nas chamadas à API.
+
+Recursos (`src/services/auth.ts`):
+- **Entrar** com e-mail e senha — tela `login`.
+- **Criar conta** — tela `signup` (com confirmação de e-mail, se estiver ativa no Supabase; link de volta em `auth/confirm`).
+- **Entrar com Google** — OAuth + PKCE no navegador do sistema (`expo-web-browser`); retorno em `auth/google`.
+- **Recuperar senha** — telas `forgot-password` (envia o e-mail) e `reset-password` (define a nova senha pelo link).
 
 Configure `.env.local` (veja `.env.example`) com `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_KEY` (chave publishable/anon — nunca a service key). Após alterar, reinicie com `npx expo start --clear`.
 
+#### Configuração necessária no Supabase / Google
+1. **Supabase → Authentication → URL Configuration → Redirect URLs**: adicione
+   - `gqa-app://**` (builds de desenvolvimento/produção)
+   - `exp://**` (Expo Go, se usar)
+   - `http://localhost:8081/**` (web, se usar)
+2. **Google Cloud → OAuth Web client → Authorized redirect URIs**: `https://<seu-projeto>.supabase.co/auth/v1/callback`.
+3. **Supabase → Authentication → Providers → Google**: ativado com o Client ID/Secret do cliente **Web**.
+4. (Opcional) **Authentication → Email Templates**: personalize os e-mails de confirmação e recuperação.
+
 ### Endereço da API
-O app detecta automaticamente o IP do computador (mesmo usado pelo Metro) e usa `http://<ip>:3000`.
-Se precisar, ajuste em **Configurações** (ícone de engrenagem) e use **Testar conexão**:
+Por padrão o app usa o backend em produção: **https://gqa-backend.onrender.com** (pode ser trocado com `EXPO_PUBLIC_API_URL` no `.env.local`). No plano gratuito do Render o servidor "dorme" após inatividade, então a primeira chamada pode levar cerca de um minuto.
+
+Para testar com o backend local, abra **Configurações** (engrenagem), toque em **Local** e use **Testar conexão**:
 
 | Ambiente | Endereço |
 | --- | --- |
