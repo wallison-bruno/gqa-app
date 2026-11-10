@@ -1,7 +1,16 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-import type { Difficulty, PickedFile, Question, UploadResponse } from '@/types';
+import type {
+  DeleteDocumentResponse,
+  DeleteQuestionResponse,
+  Difficulty,
+  PickedFile,
+  Question,
+  StoredDocument,
+  UploadResponse,
+} from '@/types';
+import { decodeFileName } from '@/utils/format';
 
 export type ApiErrorKind = 'network' | 'timeout' | 'server' | 'invalid';
 
@@ -20,7 +29,7 @@ export class ApiError extends Error {
 const SERVER_PORT = 3000;
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000; // indexação (embeddings) pode demorar
 const QUESTION_TIMEOUT_MS = 90 * 1000;
-const HEALTH_TIMEOUT_MS = 45 * 1000; // o Render pode levar ~30-50s para "acordar" após inatividade
+const DEFAULT_TIMEOUT_MS = 45 * 1000; // o Render pode levar ~30-50s para "acordar" após inatividade
 
 /** API em produção (Render). Pode ser sobrescrita com EXPO_PUBLIC_API_URL no .env.local. */
 export const PRODUCTION_API_URL = 'https://gqa-backend.onrender.com';
@@ -58,9 +67,13 @@ const NETWORK_MESSAGE =
   'Não foi possível conectar ao servidor. Verifique sua conexão com a internet. Se o servidor estava inativo, ele pode levar até um minuto para acordar: tente novamente em instantes.';
 
 function extractServerMessage(body: unknown, fallback: string): string {
-  if (body && typeof body === 'object' && 'error' in body) {
-    const msg = (body as { error?: unknown }).error;
-    if (typeof msg === 'string' && msg.trim()) return msg;
+  if (body && typeof body === 'object') {
+    const record = body as Record<string, unknown>;
+    for (const key of ['error', 'message', 'msg']) {
+      if (typeof record[key] === 'string' && (record[key] as string).trim()) {
+        return (record[key] as string).trim();
+      }
+    }
   }
   return fallback;
 }
@@ -69,6 +82,8 @@ function friendlyStatusMessage(status: number, serverMessage: string): string {
   switch (status) {
     case 401:
       return 'Sessão expirada ou inválida. Saia e entre novamente.';
+    case 404:
+      return serverMessage || 'Registro não encontrado no servidor.';
     case 413:
       return 'O arquivo é maior que o limite permitido pelo servidor.';
     case 415:
@@ -82,10 +97,18 @@ function friendlyStatusMessage(status: number, serverMessage: string): string {
   }
 }
 
+function authHeaders(accessToken?: string | null, json = false): Record<string, string> {
+  return {
+    Accept: 'application/json',
+    ...(json ? { 'Content-Type': 'application/json' } : {}),
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  };
+}
+
 async function request<T>(
   url: string,
   init: RequestInit,
-  timeoutMs: number,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -123,7 +146,7 @@ export async function checkHealth(baseUrl: string): Promise<boolean> {
   const data = await request<{ ok?: boolean }>(
     `${normalizeBaseUrl(baseUrl)}/health`,
     { method: 'GET' },
-    HEALTH_TIMEOUT_MS,
+    DEFAULT_TIMEOUT_MS,
   );
   return Boolean(data?.ok);
 }
@@ -142,7 +165,7 @@ export function uploadDocument(
 ): Promise<UploadResponse> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
-    form.append('userId', userId);
+    if (userId) form.append('userId', userId);
 
     if (Platform.OS === 'web') {
       form.append('file', file.file ?? (file as unknown as Blob), file.name);
@@ -192,45 +215,218 @@ export function uploadDocument(
   });
 }
 
-function isValidQuestion(q: unknown): q is Question {
-  if (!q || typeof q !== 'object') return false;
-  const c = q as Partial<Question>;
-  return (
-    typeof c.enunciado === 'string' &&
-    Array.isArray(c.alternativas) &&
-    c.alternativas.length >= 2 &&
-    c.alternativas.every((a) => typeof a === 'string') &&
-    typeof c.resposta_correta === 'string'
+// ---------------------------------------------------------------------------
+// Documentos do usuário (GET /documentos, DELETE /documentos/:documentId)
+// ---------------------------------------------------------------------------
+
+interface RawServerDocument {
+  id?: string;
+  document_id?: string;
+  nome_arquivo?: string;
+  title?: string;
+  file_type?: string;
+  mime_type?: string;
+  data_envio?: string;
+  created_at?: string;
+  status?: string;
+  quantidade_questoes?: number;
+  size?: number;
+}
+
+function normalizeDocument(raw: RawServerDocument): StoredDocument | null {
+  const id = String(raw.id ?? raw.document_id ?? '').trim();
+  if (!id) return null;
+  const rawTitle = String(raw.nome_arquivo ?? raw.title ?? 'Documento').trim();
+  const title = decodeFileName(rawTitle) || 'Documento';
+  const mimeType = String(raw.file_type ?? raw.mime_type ?? 'application/pdf').trim() || 'application/pdf';
+  const dateStr = raw.data_envio ?? raw.created_at ?? '';
+  const parsedDate = dateStr ? Date.parse(dateStr) : NaN;
+  const createdAt = Number.isFinite(parsedDate) ? parsedDate : Date.now();
+
+  return {
+    id,
+    title,
+    mimeType,
+    size: typeof raw.size === 'number' ? raw.size : undefined,
+    createdAt,
+    status: typeof raw.status === 'string' ? raw.status : 'processado',
+    questionCount: typeof raw.quantidade_questoes === 'number' ? raw.quantidade_questoes : 0,
+  };
+}
+
+/** GET /documentos — Lista todos os documentos enviados pelo usuário autenticado. */
+export async function listDocuments(
+  baseUrl: string,
+  accessToken: string | null,
+): Promise<StoredDocument[]> {
+  const data = await request<unknown>(
+    `${normalizeBaseUrl(baseUrl)}/documentos`,
+    {
+      method: 'GET',
+      headers: authHeaders(accessToken),
+    },
+    DEFAULT_TIMEOUT_MS,
+  );
+
+  const list = Array.isArray(data)
+    ? data
+    : data && typeof data === 'object' && Array.isArray((data as { documentos?: unknown[] }).documentos)
+      ? (data as { documentos: unknown[] }).documentos
+      : [];
+
+  return list
+    .map((item) => (item && typeof item === 'object' ? normalizeDocument(item as RawServerDocument) : null))
+    .filter((doc): doc is StoredDocument => doc !== null);
+}
+
+/** DELETE /documentos/:documentId — Apaga o documento e todas as suas questões vinculadas. */
+export async function deleteDocument(
+  baseUrl: string,
+  documentId: string,
+  accessToken: string | null,
+): Promise<DeleteDocumentResponse> {
+  return request<DeleteDocumentResponse>(
+    `${normalizeBaseUrl(baseUrl)}/documentos/${encodeURIComponent(documentId)}`,
+    {
+      method: 'DELETE',
+      headers: authHeaders(accessToken),
+    },
+    DEFAULT_TIMEOUT_MS,
   );
 }
 
-/** POST /gerar-questao (application/json). */
+// ---------------------------------------------------------------------------
+// Questões (POST /gerar-questao, GET /documentos/:id/questoes, DELETE /questoes/:id)
+// ---------------------------------------------------------------------------
+
+function normalizeDifficulty(value: unknown, fallback?: Difficulty): Difficulty | undefined {
+  if (typeof value !== 'string') return fallback;
+  const clean = value
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (clean === 'facil' || clean === 'medio' || clean === 'dificil') {
+    return clean;
+  }
+  return fallback;
+}
+
+function parseAlternatives(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is string => typeof item === 'string');
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item): item is string => typeof item === 'string');
+      }
+    } catch {
+      // ignora
+    }
+  }
+  return [];
+}
+
+function normalizeQuestion(
+  raw: unknown,
+  fallbackDocId = '',
+  fallbackDifficulty?: Difficulty,
+): Question | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const alternativas = parseAlternatives(r.alternativas);
+  if (
+    typeof r.enunciado !== 'string' ||
+    !r.enunciado.trim() ||
+    alternativas.length < 2 ||
+    typeof r.resposta_correta !== 'string'
+  ) {
+    return null;
+  }
+
+  const id = String(r.id ?? r.question_id ?? '').trim();
+  const documentId = String(r.document_id ?? fallbackDocId).trim();
+
+  return {
+    id,
+    question_id: id || undefined,
+    document_id: documentId,
+    enunciado: r.enunciado,
+    alternativas,
+    resposta_correta: r.resposta_correta,
+    nivel_dificuldade: normalizeDifficulty(r.nivel_dificuldade, fallbackDifficulty),
+    comentario: typeof r.comentario === 'string' ? r.comentario : '',
+    created_at: typeof r.created_at === 'string' ? r.created_at : undefined,
+  };
+}
+
+/** POST /gerar-questao — Gera uma nova questão para o documento e a salva no banco. */
 export async function generateQuestion(
   baseUrl: string,
   params: { documentId: string; nivelDificuldade: Difficulty; tema?: string },
   accessToken?: string | null,
 ): Promise<Question> {
-  const data = await request<Question>(
+  const data = await request<unknown>(
     `${normalizeBaseUrl(baseUrl)}/gerar-questao`,
     {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      },
+      headers: authHeaders(accessToken, true),
       body: JSON.stringify({
         document_id: params.documentId,
         nivelDificuldade: params.nivelDificuldade,
-        tema: params.tema?.trim() || null,
+        tema: params.tema?.trim() || '',
       }),
     },
     QUESTION_TIMEOUT_MS,
   );
 
-  if (!isValidQuestion(data)) {
+  const normalized = normalizeQuestion(data, params.documentId, params.nivelDificuldade);
+  if (!normalized) {
     throw new ApiError('O servidor devolveu uma questão em formato inesperado.', 'invalid');
   }
-  return { ...data, comentario: typeof data.comentario === 'string' ? data.comentario : '' };
+  return normalized;
 }
 
+/** GET /documentos/:documentId/questoes — Lista as questões salvas de um documento. */
+export async function listDocumentQuestions(
+  baseUrl: string,
+  documentId: string,
+  accessToken: string | null,
+): Promise<Question[]> {
+  const data = await request<unknown>(
+    `${normalizeBaseUrl(baseUrl)}/documentos/${encodeURIComponent(documentId)}/questoes`,
+    {
+      method: 'GET',
+      headers: authHeaders(accessToken),
+    },
+    DEFAULT_TIMEOUT_MS,
+  );
+
+  const list = Array.isArray(data)
+    ? data
+    : data && typeof data === 'object' && Array.isArray((data as { questoes?: unknown[] }).questoes)
+      ? (data as { questoes: unknown[] }).questoes
+      : [];
+
+  return list
+    .map((item) => normalizeQuestion(item, documentId))
+    .filter((q): q is Question => q !== null);
+}
+
+/** DELETE /questoes/:questaoId — Apaga uma questão específica do banco. */
+export async function deleteQuestion(
+  baseUrl: string,
+  questionId: string,
+  accessToken: string | null,
+): Promise<DeleteQuestionResponse> {
+  return request<DeleteQuestionResponse>(
+    `${normalizeBaseUrl(baseUrl)}/questoes/${encodeURIComponent(questionId)}`,
+    {
+      method: 'DELETE',
+      headers: authHeaders(accessToken),
+    },
+    DEFAULT_TIMEOUT_MS,
+  );
+}

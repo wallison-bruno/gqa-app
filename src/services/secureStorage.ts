@@ -1,20 +1,51 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as SecureStore from 'expo-secure-store';
+import { requireOptionalNativeModule } from 'expo';
 import { Platform } from 'react-native';
 
-/** Armazenamento seguro (Keychain/Keystore) no celular; AsyncStorage na web. */
+interface NativeSecureStore {
+  getValueWithKeyAsync?: (key: string, options: Record<string, unknown>) => Promise<string | null>;
+  setValueWithKeyAsync?: (value: string, key: string, options: Record<string, unknown>) => Promise<void>;
+  deleteValueWithKeyAsync?: (key: string, options: Record<string, unknown>) => Promise<void>;
+}
+
+const nativeStore: NativeSecureStore | null =
+  Platform.OS === 'web' ? null : requireOptionalNativeModule<NativeSecureStore>('ExpoSecureStore');
+
+/**
+ * Armazenamento seguro (Keychain/Keystore) quando o módulo nativo ExpoSecureStore está disponível;
+ * faz fallback automático para AsyncStorage na web ou em builds onde o módulo nativo não foi incluído.
+ */
 export const secureStorage = {
   async get(key: string): Promise<string | null> {
-    if (Platform.OS === 'web') return AsyncStorage.getItem(key);
-    return SecureStore.getItemAsync(key);
+    if (nativeStore?.getValueWithKeyAsync) {
+      try {
+        return await nativeStore.getValueWithKeyAsync(key, {});
+      } catch {
+        return AsyncStorage.getItem(key);
+      }
+    }
+    return AsyncStorage.getItem(key);
   },
   async set(key: string, value: string): Promise<void> {
-    if (Platform.OS === 'web') return AsyncStorage.setItem(key, value);
-    return SecureStore.setItemAsync(key, value);
+    if (nativeStore?.setValueWithKeyAsync) {
+      try {
+        await nativeStore.setValueWithKeyAsync(value, key, {});
+        return;
+      } catch {
+        // fallback para AsyncStorage
+      }
+    }
+    await AsyncStorage.setItem(key, value);
   },
   async remove(key: string): Promise<void> {
-    if (Platform.OS === 'web') return AsyncStorage.removeItem(key);
-    return SecureStore.deleteItemAsync(key);
+    if (nativeStore?.deleteValueWithKeyAsync) {
+      try {
+        await nativeStore.deleteValueWithKeyAsync(key, {});
+        return;
+      } catch {
+        // fallback para AsyncStorage
+      }
+    }
+    await AsyncStorage.removeItem(key);
   },
 };
-

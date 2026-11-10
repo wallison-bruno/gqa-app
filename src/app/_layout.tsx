@@ -1,9 +1,8 @@
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import * as WebBrowser from 'expo-web-browser';
 import { useEffect } from 'react';
-import { useColorScheme } from 'react-native';
+import { Platform, useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from 'styled-components/native';
 
@@ -11,8 +10,11 @@ import { AppProvider, useApp } from '@/context/AppContext';
 import { darkTheme, lightTheme } from '@/theme/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
-// Necessário na web: fecha o popup do OAuth quando a página de retorno carrega.
-WebBrowser.maybeCompleteAuthSession();
+if (Platform.OS === 'web') {
+  import('expo-web-browser')
+    .then((WebBrowser) => WebBrowser.maybeCompleteAuthSession())
+    .catch(() => {});
+}
 
 function Navigator() {
   const { ready, session } = useApp();

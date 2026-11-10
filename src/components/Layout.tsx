@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import type { ComponentRef, ReactNode, RefObject } from 'react';
-import { ScrollView, View } from 'react-native';
+import { RefreshControl, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import styled, { useTheme } from 'styled-components/native';
 
@@ -11,11 +11,14 @@ interface ScreenProps {
   footer?: ReactNode;
   header?: ReactNode;
   scrollRef?: ScreenScrollRef;
+  refreshing?: boolean;
+  onRefresh?: () => void;
 }
 
 /** Container padrão: respeita safe-area, rola o conteúdo e fixa um rodapé opcional. */
-export function Screen({ children, footer, header, scrollRef }: ScreenProps) {
+export function Screen({ children, footer, header, scrollRef, refreshing = false, onRefresh }: ScreenProps) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   return (
     <Root style={{ paddingTop: insets.top }}>
       {header}
@@ -25,6 +28,16 @@ export function Screen({ children, footer, header, scrollRef }: ScreenProps) {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          onRefresh ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={theme.colors.primary}
+              colors={[theme.colors.primary]}
+            />
+          ) : undefined
+        }
       >
         <Content>{children}</Content>
       </ScrollView>

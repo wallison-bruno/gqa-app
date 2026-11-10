@@ -2,7 +2,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
-import { getDefaultApiUrl, normalizeBaseUrl } from '@/services/api';
+import {
+  deleteDocument as deleteDocumentRemote,
+  getDefaultApiUrl,
+  listDocuments,
+  normalizeBaseUrl,
+} from '@/services/api';
 import { refreshSession, signInWithPassword, signOutRemote } from '@/services/auth';
 import type { Session } from '@/services/auth';
 import { secureStorage } from '@/services/secureStorage';
@@ -14,7 +19,6 @@ const KEYS = {
   documents: (userId: string) => `@gqa/documents/${userId}`,
 };
 
-const MAX_DOCUMENTS = 20;
 const REFRESH_MARGIN_S = 60;
 
 interface AppState {
@@ -24,6 +28,8 @@ interface AppState {
   /** ID do usuário autenticado no Supabase (vazio se deslogado). */
   userId: string;
   documents: StoredDocument[];
+  documentsLoading: boolean;
+  documentsError: string | null;
   signIn: (email: string, password: string) => Promise<void>;
   /** Passa a usar uma sessão já obtida (Google, confirmação de e-mail, cadastro, nova senha). */
   adoptSession: (session: Session) => Promise<void>;
@@ -31,8 +37,13 @@ interface AppState {
   /** Retorna um access token válido (renova automaticamente se estiver para expirar). */
   getAccessToken: () => Promise<string | null>;
   saveApiUrl: (apiUrl: string) => Promise<void>;
+  /** Busca a lista atualizada de documentos do usuário no banco (`GET /documentos`). */
+  refreshDocuments: () => Promise<void>;
   addDocument: (doc: StoredDocument) => Promise<void>;
+  /** Remove o documento e suas questões no banco (`DELETE /documentos/:id`) e atualiza o estado local. */
   removeDocument: (id: string) => Promise<void>;
+  /** Atualiza instantaneamente a contagem de questões de um documento no estado local. */
+  updateDocumentQuestionCount: (documentId: string, update: { count?: number; delta?: number }) => void;
 }
 
 const AppContext = createContext<AppState | null>(null);
@@ -42,9 +53,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [apiUrl, setApiUrl] = useState(getDefaultApiUrl());
   const [session, setSession] = useState<Session | null>(null);
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
+  const [documentsLoading, setDocumentsLoading] = useState(false);
+  const [documentsError, setDocumentsError] = useState<string | null>(null);
 
   const sessionRef = useRef<Session | null>(null);
+  const documentsRef = useRef<StoredDocument[]>([]);
   const refreshing = useRef<Promise<Session | null> | null>(null);
+
+  const setAndSyncDocuments = useCallback((next: StoredDocument[], uid: string) => {
+    documentsRef.current = next;
+    setDocuments(next);
+    if (uid) {
+      AsyncStorage.setItem(KEYS.documents(uid), JSON.stringify(next)).catch(() => {});
+    }
+  }, []);
 
   const applySession = useCallback(async (next: Session | null) => {
     sessionRef.current = next;
@@ -86,38 +108,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
-  // Documentos recentes são guardados por usuário
-  const userId = session?.user.id ?? '';
-  useEffect(() => {
-    if (!userId) return;
-    let cancelled = false;
-    AsyncStorage.getItem(KEYS.documents(userId))
-      .then((raw) => {
-        if (cancelled) return;
-        const parsed = raw ? (JSON.parse(raw) as StoredDocument[]) : [];
-        setDocuments(Array.isArray(parsed) ? parsed : []);
-      })
-      .catch(() => !cancelled && setDocuments([]));
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
-
-  const signIn = useCallback(
-    async (email: string, password: string) => {
-      const next = await signInWithPassword(email, password);
-      await applySession(next);
-    },
-    [applySession],
-  );
-
-  const signOut = useCallback(async () => {
-    const token = sessionRef.current?.accessToken;
-    setDocuments([]);
-    await applySession(null);
-    if (token) await signOutRemote(token);
-  }, [applySession]);
-
   const getAccessToken = useCallback(async () => {
     const current = sessionRef.current;
     if (!current) return null;
@@ -141,33 +131,114 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return next?.accessToken ?? null;
   }, [applySession]);
 
+  const userId = session?.user.id ?? '';
+
+  const refreshDocuments = useCallback(async () => {
+    if (!sessionRef.current) return;
+    setDocumentsLoading(true);
+    setDocumentsError(null);
+    try {
+      const token = await getAccessToken();
+      const remoteDocs = await listDocuments(apiUrl, token);
+      const uid = sessionRef.current?.user.id ?? '';
+      // Preserva o tamanho em bytes local (quando conhecido no upload) caso o servidor não retorne `size`
+      const prevById = new Map(documentsRef.current.map((d) => [d.id, d]));
+      const merged = remoteDocs.map((doc) => {
+        const prev = prevById.get(doc.id);
+        return {
+          ...doc,
+          size: doc.size ?? prev?.size,
+        };
+      });
+      setAndSyncDocuments(merged, uid);
+    } catch (e) {
+      setDocumentsError((e as Error).message || 'Não foi possível carregar seus documentos.');
+    } finally {
+      setDocumentsLoading(false);
+    }
+  }, [apiUrl, getAccessToken, setAndSyncDocuments]);
+
+  // Ao trocar de usuário: carrega cache local imediatamente e sincroniza com GET /documentos
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(KEYS.documents(userId));
+        if (!cancelled && raw) {
+          const parsed = JSON.parse(raw) as StoredDocument[];
+          if (Array.isArray(parsed)) {
+            documentsRef.current = parsed;
+            setDocuments(parsed);
+          }
+        }
+      } catch {
+        // ignora erro de leitura de cache
+      }
+      if (!cancelled) {
+        await refreshDocuments();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, refreshDocuments]);
+
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const next = await signInWithPassword(email, password);
+      await applySession(next);
+    },
+    [applySession],
+  );
+
+  const signOut = useCallback(async () => {
+    const token = sessionRef.current?.accessToken;
+    documentsRef.current = [];
+    setDocuments([]);
+    setDocumentsError(null);
+    await applySession(null);
+    if (token) await signOutRemote(token);
+  }, [applySession]);
+
   const saveApiUrl = useCallback(async (value: string) => {
     const url = normalizeBaseUrl(value) || getDefaultApiUrl();
     setApiUrl(url);
     await AsyncStorage.setItem(KEYS.apiUrl, url);
   }, []);
 
-  const persistDocuments = useCallback(
-    async (docs: StoredDocument[]) => {
-      setDocuments(docs);
-      if (userId) await AsyncStorage.setItem(KEYS.documents(userId), JSON.stringify(docs));
-    },
-    [userId],
-  );
-
   const addDocument = useCallback(
     async (doc: StoredDocument) => {
-      const next = [doc, ...documents.filter((d) => d.id !== doc.id)].slice(0, MAX_DOCUMENTS);
-      await persistDocuments(next);
+      const next = [doc, ...documentsRef.current.filter((d) => d.id !== doc.id)];
+      setAndSyncDocuments(next, userId);
     },
-    [documents, persistDocuments],
+    [userId, setAndSyncDocuments],
   );
 
   const removeDocument = useCallback(
     async (id: string) => {
-      await persistDocuments(documents.filter((d) => d.id !== id));
+      const token = await getAccessToken();
+      await deleteDocumentRemote(apiUrl, id, token);
+      const next = documentsRef.current.filter((d) => d.id !== id);
+      setAndSyncDocuments(next, userId);
     },
-    [documents, persistDocuments],
+    [apiUrl, getAccessToken, userId, setAndSyncDocuments],
+  );
+
+  const updateDocumentQuestionCount = useCallback(
+    (documentId: string, update: { count?: number; delta?: number }) => {
+      const next = documentsRef.current.map((doc) => {
+        if (doc.id !== documentId) return doc;
+        const current = doc.questionCount ?? 0;
+        const updatedCount =
+          typeof update.count === 'number'
+            ? Math.max(0, update.count)
+            : Math.max(0, current + (update.delta ?? 0));
+        return { ...doc, questionCount: updatedCount };
+      });
+      setAndSyncDocuments(next, userId);
+    },
+    [userId, setAndSyncDocuments],
   );
 
   const value = useMemo<AppState>(
@@ -177,15 +248,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
       session,
       userId,
       documents,
+      documentsLoading,
+      documentsError,
       signIn,
       adoptSession: applySession,
       signOut,
       getAccessToken,
       saveApiUrl,
+      refreshDocuments,
       addDocument,
       removeDocument,
+      updateDocumentQuestionCount,
     }),
-    [ready, apiUrl, session, userId, documents, signIn, applySession, signOut, getAccessToken, saveApiUrl, addDocument, removeDocument],
+    [
+      ready,
+      apiUrl,
+      session,
+      userId,
+      documents,
+      documentsLoading,
+      documentsError,
+      signIn,
+      applySession,
+      signOut,
+      getAccessToken,
+      saveApiUrl,
+      refreshDocuments,
+      addDocument,
+      removeDocument,
+      updateDocumentQuestionCount,
+    ],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

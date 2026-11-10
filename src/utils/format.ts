@@ -1,3 +1,12 @@
+export function decodeFileName(name?: string | null): string {
+  if (!name) return '';
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
+}
+
 export function formatBytes(bytes?: number): string {
   if (!bytes || bytes <= 0) return '';
   const units = ['B', 'KB', 'MB', 'GB'];

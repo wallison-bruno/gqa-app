@@ -1,6 +1,6 @@
+import { requireOptionalNativeModule } from 'expo';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import * as Linking from 'expo-linking';
-import * as WebBrowser from 'expo-web-browser';
 import { Platform } from 'react-native';
 
 import { ApiError } from '@/services/api';
@@ -354,15 +354,25 @@ export async function signInWithGoogle(): Promise<Session | null> {
 
   let finalUrl: string | null = null;
   try {
-    const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectTo);
-    if (result.type === 'success') {
-      finalUrl = result.url;
-    } else if (capturedUrl) {
-      finalUrl = capturedUrl;
-    } else if (Platform.OS === 'android') {
+    const hasWebBrowser = Platform.OS === 'web' || Boolean(requireOptionalNativeModule('ExpoWebBrowser'));
+    if (hasWebBrowser) {
+      const WebBrowser = await import('expo-web-browser');
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectTo);
+      if (result.type === 'success') {
+        finalUrl = result.url;
+      } else if (capturedUrl) {
+        finalUrl = capturedUrl;
+      } else if (Platform.OS === 'android') {
+        finalUrl = await Promise.race([
+          linkPromise,
+          new Promise<null>((r) => setTimeout(() => r(null), 900)),
+        ]);
+      }
+    } else {
+      await Linking.openURL(authUrl);
       finalUrl = await Promise.race([
         linkPromise,
-        new Promise<null>((r) => setTimeout(() => r(null), 900)),
+        new Promise<null>((r) => setTimeout(() => r(null), 60000)),
       ]);
     }
   } finally {

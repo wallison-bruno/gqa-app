@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, View } from 'react-native';
 import styled, { useTheme } from 'styled-components/native';
@@ -9,23 +9,41 @@ import { ErrorBanner } from '@/components/ErrorBanner';
 import { AppHeader, Card, FooterInner, IconButton, Screen, SectionTitle } from '@/components/Layout';
 import { useApp } from '@/context/AppContext';
 import { ApiError, uploadDocument } from '@/services/api';
-import { FilePickError, SUPPORTED_LABEL, MAX_FILE_MB, fileIcon, pickDocument } from '@/services/filePicker';
+import { FilePickError, MAX_FILE_MB, SUPPORTED_LABEL, fileIcon, pickDocument } from '@/services/filePicker';
 import type { PickedFile, StoredDocument } from '@/types';
-import { formatBytes, formatRelativeDate } from '@/utils/format';
+import { decodeFileName, formatBytes, formatRelativeDate } from '@/utils/format';
 import * as haptics from '@/utils/haptics';
 
 type Phase = 'idle' | 'uploading' | 'processing';
 
 export default function HomeScreen() {
   const theme = useTheme();
-  const { apiUrl, userId, documents, addDocument, removeDocument, getAccessToken } = useApp();
+  const {
+    apiUrl,
+    userId,
+    documents,
+    documentsLoading,
+    documentsError,
+    refreshDocuments,
+    addDocument,
+    removeDocument,
+    getAccessToken,
+  } = useApp();
 
   const [file, setFile] = useState<PickedFile | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState(0);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<{ message: string; network: boolean } | null>(null);
 
   const busy = phase !== 'idle';
+
+  // Sincroniza a lista de documentos do banco sempre que a tela inicial ganha foco
+  useFocusEffect(
+    useCallback(() => {
+      refreshDocuments();
+    }, [refreshDocuments]),
+  );
 
   const handlePick = useCallback(async () => {
     if (busy) return;
@@ -57,10 +75,12 @@ export default function HomeScreen() {
 
       const doc: StoredDocument = {
         id: result.document_id,
-        title: file.name,
+        title: decodeFileName(file.name),
         mimeType: file.mimeType,
         size: file.size,
         createdAt: Date.now(),
+        status: 'processado',
+        questionCount: 0,
       };
       await addDocument(doc);
       haptics.success();
@@ -78,18 +98,55 @@ export default function HomeScreen() {
     }
   }, [file, busy, apiUrl, userId, addDocument, getAccessToken]);
 
-  const openDocument = (doc: StoredDocument) =>
-    router.push({ pathname: '/quiz/[documentId]', params: { documentId: doc.id, title: doc.title } });
+  const openDocument = (doc: StoredDocument) => {
+    if (deletingId === doc.id) return;
+    router.push({
+      pathname: '/quiz/[documentId]',
+      params: { documentId: doc.id, title: decodeFileName(doc.title) },
+    });
+  };
+
+  const executeDeleteDocument = useCallback(
+    async (doc: StoredDocument) => {
+      if (deletingId) return;
+      setDeletingId(doc.id);
+      setError(null);
+      try {
+        await removeDocument(doc.id);
+        haptics.success();
+      } catch (e) {
+        haptics.error();
+        const apiError = e instanceof ApiError ? e : null;
+        setError({
+          message: apiError?.message ?? 'Não foi possível excluir o documento.',
+          network: apiError?.kind === 'network',
+        });
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, removeDocument],
+  );
 
   const confirmRemove = (doc: StoredDocument) => {
+    if (deletingId) return;
+    const cleanTitle = decodeFileName(doc.title);
     if (Platform.OS === 'web') {
-      removeDocument(doc.id);
+      const ok =
+        typeof window !== 'undefined'
+          ? window.confirm(`Excluir "${cleanTitle}" e todas as suas questões salvas?`)
+          : true;
+      if (ok) executeDeleteDocument(doc);
       return;
     }
-    Alert.alert('Remover da lista?', `"${doc.title}" será removido apenas deste aparelho.`, [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Remover', style: 'destructive', onPress: () => removeDocument(doc.id) },
-    ]);
+    Alert.alert(
+      'Excluir documento?',
+      `"${cleanTitle}" e todas as suas questões salvas serão excluídos permanentemente.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Excluir', style: 'destructive', onPress: () => executeDeleteDocument(doc) },
+      ],
+    );
   };
 
   const header = (
@@ -111,7 +168,13 @@ export default function HomeScreen() {
   const footer = (
     <FooterInner>
       <Button
-        label={phase === 'uploading' ? 'Enviando arquivo…' : phase === 'processing' ? 'Processando…' : 'Enviar e gerar questões'}
+        label={
+          phase === 'uploading'
+            ? 'Enviando arquivo…'
+            : phase === 'processing'
+              ? 'Processando…'
+              : 'Enviar e gerar questões'
+        }
         icon="sparkles"
         loading={busy}
         disabled={!file}
@@ -121,7 +184,7 @@ export default function HomeScreen() {
   );
 
   return (
-    <Screen header={header} footer={footer}>
+    <Screen header={header} footer={footer} refreshing={documentsLoading} onRefresh={refreshDocuments}>
       <View style={{ gap: 6 }}>
         <Title>Estude com o seu próprio material</Title>
         <Subtitle>
@@ -136,7 +199,7 @@ export default function HomeScreen() {
               <Ionicons name={fileIcon(file.mimeType)} size={26} color={theme.colors.primary} />
             </FileBadge>
             <View style={{ flex: 1 }}>
-              <FileName numberOfLines={2}>{file.name}</FileName>
+              <FileName numberOfLines={2}>{decodeFileName(file.name)}</FileName>
               <FileMeta>{formatBytes(file.size) || 'Tamanho desconhecido'}</FileMeta>
             </View>
             {!busy ? (
@@ -168,7 +231,9 @@ export default function HomeScreen() {
             </ProcessingRow>
           ) : null}
 
-          {!busy ? <Button label="Trocar arquivo" variant="secondary" icon="swap-horizontal" onPress={handlePick} /> : null}
+          {!busy ? (
+            <Button label="Trocar arquivo" variant="secondary" icon="swap-horizontal" onPress={handlePick} />
+          ) : null}
         </Card>
       ) : (
         <DropZone
@@ -195,40 +260,105 @@ export default function HomeScreen() {
         />
       ) : null}
 
-      {documents.length > 0 ? (
-        <View style={{ gap: 10 }}>
-          <SectionTitle>Documentos recentes</SectionTitle>
-          {documents.map((doc) => (
-            <DocRow
-              key={doc.id}
-              onPress={() => openDocument(doc)}
-              onLongPress={() => confirmRemove(doc)}
-              accessibilityRole="button"
-              accessibilityLabel={`Abrir ${doc.title}`}
-              accessibilityHint="Mantenha pressionado para remover da lista"
-            >
-              <FileBadge>
-                <Ionicons name={fileIcon(doc.mimeType)} size={22} color={theme.colors.primary} />
-              </FileBadge>
-              <View style={{ flex: 1 }}>
-                <FileName numberOfLines={1}>{doc.title}</FileName>
-                <FileMeta>
-                  {[formatBytes(doc.size), formatRelativeDate(doc.createdAt)].filter(Boolean).join(' · ')}
-                </FileMeta>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
-              <RemoveButton
-                onPress={() => confirmRemove(doc)}
-                hitSlop={8}
+      <View style={{ gap: 10 }}>
+        <SectionHeader>
+          <SectionTitle>
+            Meus documentos{documents.length > 0 ? ` (${documents.length})` : ''}
+          </SectionTitle>
+          <RefreshAction
+            onPress={refreshDocuments}
+            disabled={documentsLoading}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Atualizar lista de documentos"
+          >
+            {documentsLoading ? (
+              <ActivityIndicator size="small" color={theme.colors.primary} />
+            ) : (
+              <Ionicons name="refresh-outline" size={18} color={theme.colors.primary} />
+            )}
+            <RefreshText>Atualizar</RefreshText>
+          </RefreshAction>
+        </SectionHeader>
+
+        {documentsError && documents.length === 0 ? (
+          <ErrorBanner message={documentsError} onRetry={refreshDocuments} />
+        ) : null}
+
+        {documentsLoading && documents.length === 0 ? (
+          <EmptyDocsCard>
+            <ActivityIndicator color={theme.colors.primary} />
+            <EmptyDocsText>Carregando seus documentos salvos…</EmptyDocsText>
+          </EmptyDocsCard>
+        ) : documents.length === 0 ? (
+          <EmptyDocsCard>
+            <Ionicons name="folder-open-outline" size={28} color={theme.colors.textMuted} />
+            <EmptyDocsText>
+              Você ainda não enviou nenhum documento. Escolha um arquivo acima para começar!
+            </EmptyDocsText>
+          </EmptyDocsCard>
+        ) : (
+          documents.map((doc) => {
+            const count = doc.questionCount ?? 0;
+            const isDeleting = deletingId === doc.id;
+            const metaParts = [
+              formatBytes(doc.size),
+              formatRelativeDate(doc.createdAt),
+            ].filter(Boolean);
+
+            return (
+              <DocRow
+                key={doc.id}
+                onPress={() => openDocument(doc)}
+                onLongPress={() => confirmRemove(doc)}
+                disabled={isDeleting}
+                style={{ opacity: isDeleting ? 0.55 : 1 }}
                 accessibilityRole="button"
-                accessibilityLabel={`Remover ${doc.title} da lista`}
+                accessibilityLabel={`Abrir ${doc.title}`}
+                accessibilityHint="Toque para estudar as questões ou mantenha pressionado para excluir"
               >
-                <Ionicons name="trash-outline" size={18} color={theme.colors.textMuted} />
-              </RemoveButton>
-            </DocRow>
-          ))}
-        </View>
-      ) : null}
+                <FileBadge>
+                  <Ionicons name={fileIcon(doc.mimeType)} size={22} color={theme.colors.primary} />
+                </FileBadge>
+                <View style={{ flex: 1, gap: 4 }}>
+                  <FileName numberOfLines={1}>{decodeFileName(doc.title)}</FileName>
+                  <DocMetaRow>
+                    <QuestionCountBadge $hasQuestions={count > 0}>
+                      <Ionicons
+                        name={count > 0 ? 'help-buoy-outline' : 'sparkles-outline'}
+                        size={12}
+                        color={count > 0 ? theme.colors.primary : theme.colors.textMuted}
+                      />
+                      <QuestionCountText $hasQuestions={count > 0}>
+                        {count > 0
+                          ? `${count} ${count === 1 ? 'questão' : 'questões'}`
+                          : 'Gerar questões'}
+                      </QuestionCountText>
+                    </QuestionCountBadge>
+                    {metaParts.length > 0 ? (
+                      <FileMeta numberOfLines={1}>{metaParts.join(' · ')}</FileMeta>
+                    ) : null}
+                  </DocMetaRow>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
+                <RemoveButton
+                  onPress={() => confirmRemove(doc)}
+                  disabled={isDeleting}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Excluir ${doc.title}`}
+                >
+                  {isDeleting ? (
+                    <ActivityIndicator size="small" color={theme.colors.danger} />
+                  ) : (
+                    <Ionicons name="trash-outline" size={18} color={theme.colors.danger} />
+                  )}
+                </RemoveButton>
+              </DocRow>
+            );
+          })
+        )}
+      </View>
     </Screen>
   );
 }
@@ -301,8 +431,8 @@ const FileName = styled.Text`
 `;
 
 const FileMeta = styled.Text`
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 12px;
+  line-height: 16px;
   color: ${({ theme }) => theme.colors.textMuted};
 `;
 
@@ -325,6 +455,44 @@ const ProcessingRow = styled.View`
   gap: 12px;
 `;
 
+const SectionHeader = styled.View`
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+`;
+
+const RefreshAction = styled.Pressable`
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: ${({ theme }) => theme.radius.pill}px;
+`;
+
+const RefreshText = styled.Text`
+  font-size: 13px;
+  font-weight: 700;
+  color: ${({ theme }) => theme.colors.primary};
+`;
+
+const EmptyDocsCard = styled.View`
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 16px;
+  border-radius: ${({ theme }) => theme.radius.md}px;
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.border};
+  background-color: ${({ theme }) => theme.colors.surface};
+`;
+
+const EmptyDocsText = styled.Text`
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+  color: ${({ theme }) => theme.colors.textMuted};
+`;
+
 const DocRow = styled.Pressable`
   flex-direction: row;
   align-items: center;
@@ -336,7 +504,34 @@ const DocRow = styled.Pressable`
   background-color: ${({ theme }) => theme.colors.surface};
 `;
 
-const RemoveButton = styled.Pressable`
-  padding: 6px;
+const DocMetaRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 `;
 
+const QuestionCountBadge = styled.View<{ $hasQuestions: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: ${({ theme }) => theme.radius.pill}px;
+  background-color: ${({ theme, $hasQuestions }) =>
+    $hasQuestions ? theme.colors.primarySoft : theme.colors.surfaceAlt};
+`;
+
+const QuestionCountText = styled.Text<{ $hasQuestions: boolean }>`
+  font-size: 12px;
+  font-weight: 700;
+  color: ${({ theme, $hasQuestions }) => ($hasQuestions ? theme.colors.primary : theme.colors.textMuted)};
+`;
+
+const RemoveButton = styled.Pressable`
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${({ theme }) => theme.colors.dangerSoft};
+`;

@@ -1,6 +1,7 @@
 import * as DocumentPicker from 'expo-document-picker';
 
 import type { PickedFile } from '@/types';
+import { decodeFileName } from '@/utils/format';
 
 export const MAX_FILE_MB = 15;
 
@@ -38,7 +39,8 @@ export async function pickDocument(): Promise<PickedFile | null> {
   if (result.canceled || !result.assets?.length) return null;
 
   const asset = result.assets[0];
-  const mimeType = resolveMimeType(asset.name, asset.mimeType);
+  const fileName = decodeFileName(asset.name);
+  const mimeType = resolveMimeType(fileName, asset.mimeType);
   if (!mimeType) {
     throw new FilePickError(`Formato não suportado. Envie ${SUPPORTED_LABEL}.`);
   }
@@ -48,7 +50,7 @@ export async function pickDocument(): Promise<PickedFile | null> {
 
   return {
     uri: asset.uri,
-    name: asset.name,
+    name: fileName,
     mimeType,
     size: asset.size,
     file: asset.file,

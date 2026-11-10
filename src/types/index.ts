@@ -2,20 +2,37 @@ import type { Difficulty } from '@/theme/theme';
 
 export type { Difficulty };
 
-/** Resposta de POST /gerar-questao */
+/** Questão retornada por POST /gerar-questao ou GET /documentos/:documentId/questoes */
 export interface Question {
+  id: string;
+  question_id?: string;
   document_id: string;
   enunciado: string;
   alternativas: string[];
   /** Texto exato da alternativa correta */
   resposta_correta: string;
+  nivel_dificuldade?: Difficulty;
   comentario: string;
+  created_at?: string;
 }
 
 /** Resposta de POST /upload */
 export interface UploadResponse {
   document_id: string;
   message: string;
+}
+
+/** Resposta de DELETE /documentos/:documentId */
+export interface DeleteDocumentResponse {
+  message: string;
+  document_id: string;
+}
+
+/** Resposta de DELETE /questoes/:questaoId */
+export interface DeleteQuestionResponse {
+  message: string;
+  question_id: string;
+  document_id?: string;
 }
 
 /** Arquivo escolhido pelo usuário (já normalizado). */
@@ -28,17 +45,18 @@ export interface PickedFile {
   file?: File;
 }
 
-/** Documento enviado (guardado localmente para reabrir depois). */
+/** Documento do usuário (vindo de GET /documentos ou recém-enviado). */
 export interface StoredDocument {
   id: string;
   title: string;
   mimeType: string;
   size?: number;
   createdAt: number;
+  status?: string;
+  questionCount?: number;
 }
 
 export interface SessionStats {
   total: number;
   correct: number;
 }
-
