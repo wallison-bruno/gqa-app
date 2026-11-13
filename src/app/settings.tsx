@@ -6,6 +6,7 @@ import styled, { useTheme } from 'styled-components/native';
 
 import { Button } from '@/components/Button';
 import { AppHeader, Card, FooterInner, Screen, SectionTitle } from '@/components/Layout';
+import { DiscreteSpinner, FadeInView } from '@/components/LoadingPrimitives';
 import { useApp } from '@/context/AppContext';
 import { checkHealth, getDefaultApiUrl, getLocalApiUrl, normalizeBaseUrl } from '@/services/api';
 import type { ApiError } from '@/services/api';
@@ -84,6 +85,7 @@ export default function SettingsScreen() {
           <View style={{ flex: 1 }}>
             <Button
               label="Testar conexão"
+              loadingLabel="Testando conexão…"
               variant="secondary"
               icon="pulse"
               loading={test.status === 'testing'}
@@ -112,15 +114,28 @@ export default function SettingsScreen() {
           </View>
         </Row>
 
+        {test.status === 'testing' ? (
+          <FadeInView>
+            <TestingBanner accessibilityLiveRegion="polite">
+              <DiscreteSpinner size="sm" />
+              <TestingText>
+                Verificando disponibilidade de {normalizeBaseUrl(urlInput) || getDefaultApiUrl()}…
+              </TestingText>
+            </TestingBanner>
+          </FadeInView>
+        ) : null}
+
         {test.status === 'ok' || test.status === 'fail' ? (
-          <Result $ok={test.status === 'ok'} accessibilityLiveRegion="polite">
-            <Ionicons
-              name={test.status === 'ok' ? 'checkmark-circle' : 'alert-circle'}
-              size={22}
-              color={test.status === 'ok' ? theme.colors.success : theme.colors.danger}
-            />
-            <ResultText $ok={test.status === 'ok'}>{test.message}</ResultText>
-          </Result>
+          <FadeInView>
+            <Result $ok={test.status === 'ok'} accessibilityLiveRegion="polite">
+              <Ionicons
+                name={test.status === 'ok' ? 'checkmark-circle' : 'alert-circle'}
+                size={22}
+                color={test.status === 'ok' ? theme.colors.success : theme.colors.danger}
+              />
+              <ResultText $ok={test.status === 'ok'}>{test.message}</ResultText>
+            </Result>
+          </FadeInView>
         ) : null}
         {test.status === 'idle' ? <Hint>Será usado: {normalizeBaseUrl(urlInput) || getDefaultApiUrl()}</Hint> : null}
       </Card>
@@ -183,5 +198,21 @@ const ResultText = styled.Text<{ $ok: boolean }>`
   font-size: 14px;
   line-height: 20px;
   color: ${({ theme, $ok }) => ($ok ? theme.colors.success : theme.colors.danger)};
+`;
+
+const TestingBanner = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: ${({ theme }) => theme.radius.md}px;
+  background-color: ${({ theme }) => theme.colors.surfaceAlt};
+`;
+
+const TestingText = styled.Text`
+  flex: 1;
+  font-size: 14px;
+  line-height: 20px;
+  color: ${({ theme }) => theme.colors.primary};
 `;
 

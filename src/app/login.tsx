@@ -62,6 +62,7 @@ export default function LoginScreen() {
     <FooterInner>
       <Button
         label="Entrar"
+        loadingLabel="Entrando…"
         icon="log-in-outline"
         loading={loading === 'password'}
         disabled={!canSubmit}
@@ -114,6 +115,7 @@ export default function LoginScreen() {
 
         <Button
           label="Continuar com Google"
+          loadingLabel="Conectando com Google…"
           variant="secondary"
           icon="logo-google"
           loading={loading === 'google'}

@@ -128,6 +128,7 @@ export default function ForgotPasswordScreen() {
             <FooterInner>
               <Button
                 label="Redefinir senha"
+                loadingLabel="Redefinindo senha…"
                 icon="checkmark-circle-outline"
                 loading={loading}
                 disabled={loading}
@@ -202,6 +203,7 @@ export default function ForgotPasswordScreen() {
 
           <Button
             label={resendState === 'sent' ? 'Código reenviado!' : 'Reenviar código'}
+            loadingLabel="Reenviando código…"
             variant="secondary"
             icon="refresh"
             loading={resendState === 'sending'}
@@ -231,6 +233,7 @@ export default function ForgotPasswordScreen() {
           <FooterInner>
             <Button
               label="Enviar código"
+              loadingLabel="Enviando código…"
               icon="send-outline"
               loading={loading}
               disabled={email.trim().length < 4}

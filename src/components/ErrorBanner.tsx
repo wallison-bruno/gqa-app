@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import styled, { useTheme } from 'styled-components/native';
 
 import { Button } from '@/components/Button';
+import { FadeInView } from '@/components/LoadingPrimitives';
 
 interface Props {
   message: string;
@@ -12,20 +13,22 @@ interface Props {
 export function ErrorBanner({ message, onRetry, onOpenSettings }: Props) {
   const theme = useTheme();
   return (
-    <Box accessibilityRole="alert">
-      <Row>
-        <Ionicons name="alert-circle" size={22} color={theme.colors.danger} />
-        <Message>{message}</Message>
-      </Row>
-      {onRetry || onOpenSettings ? (
-        <Actions>
-          {onRetry ? <Button label="Tentar novamente" variant="ghost" icon="refresh" onPress={onRetry} /> : null}
-          {onOpenSettings ? (
-            <Button label="Configurações" variant="ghost" icon="settings-outline" onPress={onOpenSettings} />
-          ) : null}
-        </Actions>
-      ) : null}
-    </Box>
+    <FadeInView>
+      <Box accessibilityRole="alert">
+        <Row>
+          <Ionicons name="alert-circle" size={22} color={theme.colors.danger} />
+          <Message>{message}</Message>
+        </Row>
+        {onRetry || onOpenSettings ? (
+          <Actions>
+            {onRetry ? <Button label="Tentar novamente" variant="ghost" icon="refresh" onPress={onRetry} /> : null}
+            {onOpenSettings ? (
+              <Button label="Configurações" variant="ghost" icon="settings-outline" onPress={onOpenSettings} />
+            ) : null}
+          </Actions>
+        ) : null}
+      </Box>
+    </FadeInView>
   );
 }
 

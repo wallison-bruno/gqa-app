@@ -1,13 +1,14 @@
 import { Ionicons } from '@expo/vector-icons';
-import { ActivityIndicator } from 'react-native';
 import styled, { useTheme } from 'styled-components/native';
 
+import { DiscreteSpinner } from '@/components/LoadingPrimitives';
 import { tap } from '@/utils/haptics';
 
 type Variant = 'primary' | 'secondary' | 'ghost';
 
 interface Props {
   label: string;
+  loadingLabel?: string;
   onPress: () => void;
   variant?: Variant;
   icon?: keyof typeof Ionicons.glyphMap;
@@ -15,16 +16,17 @@ interface Props {
   disabled?: boolean;
 }
 
-export function Button({ label, onPress, variant = 'primary', icon, loading, disabled }: Props) {
+export function Button({ label, loadingLabel, onPress, variant = 'primary', icon, loading, disabled }: Props) {
   const theme = useTheme();
   const inactive = disabled || loading;
   const color = variant === 'primary' ? theme.colors.onPrimary : theme.colors.primary;
+  const displayLabel = loading ? (loadingLabel ?? label) : label;
 
   return (
     <Base
       accessibilityRole="button"
       accessibilityState={{ disabled: !!inactive, busy: !!loading }}
-      accessibilityLabel={label}
+      accessibilityLabel={displayLabel}
       disabled={inactive}
       $variant={variant}
       $inactive={!!inactive}
@@ -34,11 +36,18 @@ export function Button({ label, onPress, variant = 'primary', icon, loading, dis
       }}
     >
       {loading ? (
-        <ActivityIndicator color={color} />
+        <>
+          <DiscreteSpinner size="sm" color={color} />
+          <Label $color={color} numberOfLines={1}>
+            {displayLabel}
+          </Label>
+        </>
       ) : (
         <>
           {icon ? <Ionicons name={icon} size={20} color={color} /> : null}
-          <Label $color={color}>{label}</Label>
+          <Label $color={color} numberOfLines={1}>
+            {displayLabel}
+          </Label>
         </>
       )}
     </Base>
@@ -63,6 +72,7 @@ const Base = styled.Pressable<{ $variant: Variant; $inactive: boolean }>`
 `;
 
 const Label = styled.Text<{ $color: string }>`
+  flex-shrink: 1;
   font-size: 16px;
   font-weight: 700;
   color: ${({ $color }) => $color};

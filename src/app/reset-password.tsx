@@ -1,13 +1,13 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import type { ComponentRef } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, TextInput } from 'react-native';
-import styled, { useTheme } from 'styled-components/native';
+import { KeyboardAvoidingView, Platform, TextInput } from 'react-native';
 
 import { AuthHero, PasswordField } from '@/components/AuthForm';
 import { Button } from '@/components/Button';
 import { ErrorBanner } from '@/components/ErrorBanner';
 import { FooterInner, Screen } from '@/components/Layout';
+import { StatusLoadingCard } from '@/components/LoadingPrimitives';
 import { useApp } from '@/context/AppContext';
 import { MIN_PASSWORD_LENGTH, exchangeRecoveryCode, updatePassword } from '@/services/auth';
 import type { Session } from '@/services/auth';
@@ -20,7 +20,6 @@ type Phase = 'verifying' | 'ready' | 'invalid';
  * O `code` é trocado por uma sessão temporária (PKCE), usada só para definir a nova senha.
  */
 export default function ResetPasswordScreen() {
-  const theme = useTheme();
   const { adoptSession } = useApp();
   const params = useLocalSearchParams<{ code?: string; error_description?: string }>();
   const code = typeof params.code === 'string' ? params.code : undefined;
@@ -97,10 +96,12 @@ export default function ResetPasswordScreen() {
   if (phase === 'verifying') {
     return (
       <Screen>
-        <Center>
-          <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Muted>Validando o link…</Muted>
-        </Center>
+        <StatusLoadingCard
+          icon="key-outline"
+          badgeText="Validando código"
+          title="Verificando link de recuperação"
+          subtitle="Checando a segurança do link antes de liberar a criação da nova senha…"
+        />
       </Screen>
     );
   }
@@ -126,7 +127,13 @@ export default function ResetPasswordScreen() {
       <Screen
         footer={
           <FooterInner>
-            <Button label="Salvar nova senha" icon="checkmark-circle-outline" loading={saving} onPress={submit} />
+            <Button
+              label="Salvar nova senha"
+              loadingLabel="Salvando nova senha…"
+              icon="checkmark-circle-outline"
+              loading={saving}
+              onPress={submit}
+            />
           </FooterInner>
         }
       >
@@ -177,15 +184,4 @@ export default function ResetPasswordScreen() {
     </KeyboardAvoidingView>
   );
 }
-
-const Center = styled.View`
-  align-items: center;
-  gap: 16px;
-  padding: 80px 0;
-`;
-
-const Muted = styled.Text`
-  font-size: 15px;
-  color: ${({ theme }) => theme.colors.textMuted};
-`;
 

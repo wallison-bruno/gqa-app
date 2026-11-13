@@ -1,6 +1,16 @@
-import type { Difficulty } from '@/theme/theme';
+import type { Difficulty, EducationLevel, QuestionType } from '@/theme/theme';
 
-export type { Difficulty };
+export type { Difficulty, EducationLevel, QuestionType };
+
+/** Parâmetros enviados para POST /gerar-questao */
+export interface GenerateQuestionParams {
+  documentId: string;
+  dificuldade: Difficulty;
+  escolaridade: EducationLevel;
+  tipo: QuestionType;
+  banca: string;
+  tema?: string;
+}
 
 /** Questão retornada por POST /gerar-questao ou GET /documentos/:documentId/questoes */
 export interface Question {
@@ -12,6 +22,9 @@ export interface Question {
   /** Texto exato da alternativa correta */
   resposta_correta: string;
   nivel_dificuldade?: Difficulty;
+  escolaridade?: EducationLevel;
+  tipo?: QuestionType;
+  banca?: string;
   comentario: string;
   created_at?: string;
 }

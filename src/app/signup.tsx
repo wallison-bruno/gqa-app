@@ -141,6 +141,7 @@ export default function SignUpScreen() {
             <FooterInner>
               <Button
                 label="Confirmar código"
+                loadingLabel="Validando código…"
                 icon="checkmark-circle-outline"
                 loading={verifyingOtp}
                 disabled={verifyingOtp}
@@ -178,6 +179,7 @@ export default function SignUpScreen() {
           {error ? <ErrorBanner message={error} /> : null}
           <Button
             label={resend === 'sent' ? 'Código reenviado!' : 'Reenviar código'}
+            loadingLabel="Reenviando código…"
             variant="secondary"
             icon="refresh"
             loading={resend === 'sending'}
@@ -192,7 +194,14 @@ export default function SignUpScreen() {
 
   const footer = (
     <FooterInner>
-      <Button label="Criar conta" icon="person-add-outline" loading={loading === 'signup'} disabled={busy} onPress={submit} />
+      <Button
+        label="Criar conta"
+        loadingLabel="Criando conta…"
+        icon="person-add-outline"
+        loading={loading === 'signup'}
+        disabled={busy}
+        onPress={submit}
+      />
     </FooterInner>
   );
 
@@ -272,6 +281,7 @@ export default function SignUpScreen() {
 
         <Button
           label="Cadastrar com Google"
+          loadingLabel="Conectando com Google…"
           variant="secondary"
           icon="logo-google"
           loading={loading === 'google'}

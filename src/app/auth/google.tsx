@@ -1,12 +1,11 @@
 import * as Linking from 'expo-linking';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator } from 'react-native';
-import styled, { useTheme } from 'styled-components/native';
 
 import { AuthHero } from '@/components/AuthForm';
 import { Button } from '@/components/Button';
 import { FooterInner, Screen } from '@/components/Layout';
+import { StatusLoadingCard } from '@/components/LoadingPrimitives';
 import { useApp } from '@/context/AppContext';
 import { exchangeGoogleCode, parseAuthParams, sessionFromImplicitTokens } from '@/services/auth';
 
@@ -15,7 +14,6 @@ import { exchangeGoogleCode, parseAuthParams, sessionFromImplicitTokens } from '
  * Suporta tanto `?code=...` (PKCE) quanto `#access_token=...` (implicit).
  */
 export default function GoogleCallbackScreen() {
-  const theme = useTheme();
   const { session, adoptSession } = useApp();
   const params = useLocalSearchParams<{ code?: string; error?: string; error_description?: string }>();
   const rawUrl = Linking.useURL();
@@ -83,21 +81,12 @@ export default function GoogleCallbackScreen() {
 
   return (
     <Screen>
-      <Center>
-        <ActivityIndicator size="large" color={theme.colors.primary} />
-        <Muted>Finalizando login com Google…</Muted>
-      </Center>
+      <StatusLoadingCard
+        icon="logo-google"
+        badgeText="Autenticação segura"
+        title="Conectando com o Google"
+        subtitle="Confirmando suas credenciais. Você será redirecionado em instantes…"
+      />
     </Screen>
   );
 }
-
-const Center = styled.View`
-  align-items: center;
-  gap: 16px;
-  padding: 80px 0;
-`;
-
-const Muted = styled.Text`
-  font-size: 15px;
-  color: ${({ theme }) => theme.colors.textMuted};
-`;

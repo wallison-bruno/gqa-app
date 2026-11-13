@@ -1,11 +1,10 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator } from 'react-native';
-import styled, { useTheme } from 'styled-components/native';
 
 import { AuthHero } from '@/components/AuthForm';
 import { Button } from '@/components/Button';
 import { FooterInner, Screen } from '@/components/Layout';
+import { StatusLoadingCard } from '@/components/LoadingPrimitives';
 import { useApp } from '@/context/AppContext';
 import { exchangeSignupCode } from '@/services/auth';
 
@@ -14,7 +13,6 @@ import { exchangeSignupCode } from '@/services/auth';
  * Troca o `code` por uma sessão e já entra no app.
  */
 export default function ConfirmEmailScreen() {
-  const theme = useTheme();
   const { adoptSession } = useApp();
   const params = useLocalSearchParams<{ code?: string; error_description?: string }>();
   const code = typeof params.code === 'string' ? params.code : undefined;
@@ -57,22 +55,13 @@ export default function ConfirmEmailScreen() {
 
   return (
     <Screen>
-      <Center>
-        <ActivityIndicator size="large" color={theme.colors.primary} />
-        <Muted>Confirmando seu e-mail…</Muted>
-      </Center>
+      <StatusLoadingCard
+        icon="mail-open-outline"
+        badgeText="Verificando confirmação"
+        title="Confirmando seu e-mail"
+        subtitle="Validando o link de ativação e preparando seu acesso seguro ao GQA…"
+      />
     </Screen>
   );
 }
-
-const Center = styled.View`
-  align-items: center;
-  gap: 16px;
-  padding: 80px 0;
-`;
-
-const Muted = styled.Text`
-  font-size: 15px;
-  color: ${({ theme }) => theme.colors.textMuted};
-`;
 

@@ -5,8 +5,11 @@ import type {
   DeleteDocumentResponse,
   DeleteQuestionResponse,
   Difficulty,
+  EducationLevel,
+  GenerateQuestionParams,
   PickedFile,
   Question,
+  QuestionType,
   StoredDocument,
   UploadResponse,
 } from '@/types';
@@ -85,11 +88,11 @@ function friendlyStatusMessage(status: number, serverMessage: string): string {
     case 404:
       return serverMessage || 'Registro não encontrado no servidor.';
     case 413:
-      return 'O arquivo é maior que o limite permitido pelo servidor.';
+      return 'Esse arquivo é muito grande. Tente enviar um arquivo de até 15 MB.';
     case 415:
-      return 'Formato de arquivo não suportado. Envie PDF, DOCX, TXT ou imagem.';
+      return 'Formato não suportado. Escolha um arquivo PDF, DOCX, TXT ou imagem.';
     case 422:
-      return 'Não foi possível extrair texto suficiente do arquivo.';
+      return 'Não foi possível ler o texto desse arquivo. Tente um arquivo mais nítido ou com mais conteúdo.';
     case 502:
       return `A IA não conseguiu gerar uma questão válida agora. Tente novamente. (${serverMessage})`;
     default:
@@ -179,8 +182,18 @@ export function uploadDocument(
     xhr.setRequestHeader('Accept', 'application/json');
     if (accessToken) xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
 
+    let highestProgress = 0;
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && event.total > 0) onProgress?.(event.loaded / event.total);
+      if (event.lengthComputable && event.total > 0) {
+        // No Android, o OkHttp/React Native contabiliza `2 * event.total` bytes no ciclo completo do FormData.
+        // Dividindo por `event.total * 2` no Android e mantendo o valor monotônico, a barra sobe de 0% a 100% uma única vez.
+        const totalBytes = Platform.OS === 'android' ? event.total * 2 : event.total;
+        const raw = Math.min(1, Math.max(0, event.loaded / totalBytes));
+        if (raw > highestProgress) {
+          highestProgress = raw;
+          onProgress?.(highestProgress);
+        }
+      }
     };
     xhr.upload.onload = () => {
       onProgress?.(1);
@@ -198,7 +211,7 @@ export function uploadDocument(
       if (xhr.status >= 200 && xhr.status < 300) {
         const id = (body as UploadResponse | null)?.document_id;
         if (!id) {
-          reject(new ApiError('Resposta inesperada do servidor ao enviar o arquivo.', 'invalid'));
+          reject(new ApiError('Não foi possível concluir o envio deste arquivo. Tente novamente em instantes.', 'invalid'));
           return;
         }
         resolve(body as UploadResponse);
@@ -209,7 +222,7 @@ export function uploadDocument(
     };
     xhr.onerror = () => reject(new ApiError(NETWORK_MESSAGE, 'network'));
     xhr.ontimeout = () =>
-      reject(new ApiError('O processamento do arquivo demorou demais. Tente um arquivo menor.', 'timeout'));
+      reject(new ApiError('O envio demorou mais do que o esperado. Verifique sua conexão ou tente um arquivo menor.', 'timeout'));
 
     xhr.send(form);
   });
@@ -332,7 +345,12 @@ function parseAlternatives(raw: unknown): string[] {
 function normalizeQuestion(
   raw: unknown,
   fallbackDocId = '',
-  fallbackDifficulty?: Difficulty,
+  fallbacks?: {
+    dificuldade?: Difficulty;
+    escolaridade?: EducationLevel;
+    tipo?: QuestionType;
+    banca?: string;
+  },
 ): Question | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
@@ -348,6 +366,32 @@ function normalizeQuestion(
 
   const id = String(r.id ?? r.question_id ?? '').trim();
   const documentId = String(r.document_id ?? fallbackDocId).trim();
+  const rawEscolaridade =
+    typeof r.escolaridade === 'string'
+      ? r.escolaridade.trim().toLowerCase()
+      : typeof r.nivel_escolaridade === 'string'
+        ? r.nivel_escolaridade.trim().toLowerCase()
+        : '';
+  const escolaridade: EducationLevel | undefined =
+    rawEscolaridade === 'medio' || rawEscolaridade === 'superior'
+      ? rawEscolaridade
+      : fallbacks?.escolaridade;
+
+  const rawTipo =
+    typeof r.tipo === 'string'
+      ? r.tipo.trim().toLowerCase()
+      : typeof r.tipo_questao === 'string'
+        ? r.tipo_questao.trim().toLowerCase()
+        : '';
+  const tipo: QuestionType =
+    rawTipo === 'certo_errado' || rawTipo === 'multipla_escolha'
+      ? rawTipo
+      : fallbacks?.tipo ?? (alternativas.length === 2 ? 'certo_errado' : 'multipla_escolha');
+
+  const banca =
+    typeof r.banca === 'string' && r.banca.trim()
+      ? r.banca.trim()
+      : fallbacks?.banca;
 
   return {
     id,
@@ -356,7 +400,13 @@ function normalizeQuestion(
     enunciado: r.enunciado,
     alternativas,
     resposta_correta: r.resposta_correta,
-    nivel_dificuldade: normalizeDifficulty(r.nivel_dificuldade, fallbackDifficulty),
+    nivel_dificuldade: normalizeDifficulty(
+      r.nivel_dificuldade ?? r.difficulty_level ?? r.dificuldade,
+      fallbacks?.dificuldade,
+    ),
+    escolaridade,
+    tipo,
+    banca,
     comentario: typeof r.comentario === 'string' ? r.comentario : '',
     created_at: typeof r.created_at === 'string' ? r.created_at : undefined,
   };
@@ -365,9 +415,11 @@ function normalizeQuestion(
 /** POST /gerar-questao — Gera uma nova questão para o documento e a salva no banco. */
 export async function generateQuestion(
   baseUrl: string,
-  params: { documentId: string; nivelDificuldade: Difficulty; tema?: string },
+  params: GenerateQuestionParams,
   accessToken?: string | null,
 ): Promise<Question> {
+  const cleanBanca = params.banca.trim() || 'Padrão';
+  const cleanTema = params.tema?.trim() || '';
   const data = await request<unknown>(
     `${normalizeBaseUrl(baseUrl)}/gerar-questao`,
     {
@@ -375,14 +427,23 @@ export async function generateQuestion(
       headers: authHeaders(accessToken, true),
       body: JSON.stringify({
         document_id: params.documentId,
-        nivelDificuldade: params.nivelDificuldade,
-        tema: params.tema?.trim() || '',
+        tema: cleanTema,
+        dificuldade: params.dificuldade,
+        nivelDificuldade: params.dificuldade,
+        escolaridade: params.escolaridade,
+        tipo: params.tipo,
+        banca: cleanBanca,
       }),
     },
     QUESTION_TIMEOUT_MS,
   );
 
-  const normalized = normalizeQuestion(data, params.documentId, params.nivelDificuldade);
+  const normalized = normalizeQuestion(data, params.documentId, {
+    dificuldade: params.dificuldade,
+    escolaridade: params.escolaridade,
+    tipo: params.tipo,
+    banca: cleanBanca,
+  });
   if (!normalized) {
     throw new ApiError('O servidor devolveu uma questão em formato inesperado.', 'invalid');
   }
@@ -410,9 +471,16 @@ export async function listDocumentQuestions(
       ? (data as { questoes: unknown[] }).questoes
       : [];
 
-  return list
+  const normalizedList = list
     .map((item) => normalizeQuestion(item, documentId))
     .filter((q): q is Question => q !== null);
+
+  // Ordena cronologicamente (mais antiga #1 -> mais recente #N) para manter numeração estável
+  return normalizedList.sort((a, b) => {
+    const ta = a.created_at ? Date.parse(a.created_at) : 0;
+    const tb = b.created_at ? Date.parse(b.created_at) : 0;
+    return ta - tb;
+  });
 }
 
 /** DELETE /questoes/:questaoId — Apaga uma questão específica do banco. */

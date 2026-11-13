@@ -1,26 +1,28 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, ScrollView, View } from 'react-native';
+import { Alert, Platform, ScrollView, View } from 'react-native';
 import styled, { useTheme } from 'styled-components/native';
 
 import { Button } from '@/components/Button';
-import { DifficultySelector } from '@/components/DifficultySelector';
 import { ErrorBanner } from '@/components/ErrorBanner';
+import { GeneratorSettingsPanel } from '@/components/GeneratorSettingsPanel';
 import { AppHeader, Card, FooterInner, Screen, SectionTitle } from '@/components/Layout';
 import type { ScreenScrollRef } from '@/components/Layout';
+import { DiscreteSpinner, FadeInView } from '@/components/LoadingPrimitives';
 import { OptionItem } from '@/components/OptionItem';
 import type { OptionStatus } from '@/components/OptionItem';
 import { QuestionSkeleton } from '@/components/QuestionSkeleton';
 import { useApp } from '@/context/AppContext';
+import { useGeneratorSettings } from '@/hooks/useGeneratorSettings';
 import {
   ApiError,
   deleteQuestion as deleteQuestionRemote,
   generateQuestion,
   listDocumentQuestions,
 } from '@/services/api';
-import { DIFFICULTIES } from '@/theme/theme';
-import type { Difficulty, Question } from '@/types';
+import { DIFFICULTIES, EDUCATION_LEVELS, QUESTION_TYPES } from '@/theme/theme';
+import type { Question } from '@/types';
 import { OPTION_LETTERS, decodeFileName } from '@/utils/format';
 import * as haptics from '@/utils/haptics';
 
@@ -29,15 +31,51 @@ interface AnswerState {
   confirmed: boolean;
 }
 
-const normalize = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+const stripLeadingLetter = (s: string) => s.replace(/^[A-Fa-f]\s*[)\].:-]\s*/, '').trim();
+const normalize = (s: string) => stripLeadingLetter(s).toLowerCase().replace(/\s+/g, ' ');
+
+function isCertoErradoQuestion(question: Question | null): boolean {
+  if (!question) return false;
+  if (question.tipo === 'certo_errado') return true;
+  if (question.alternativas.length !== 2) return false;
+  const norms = question.alternativas.map((a) => normalize(a));
+  return norms.includes('certo') && norms.includes('errado');
+}
+
+function getOptionBadgeLetter(question: Question | null, index: number): string {
+  if (question && isCertoErradoQuestion(question)) {
+    const norm = normalize(question.alternativas[index] ?? '');
+    if (norm.startsWith('certo')) return 'C';
+    if (norm.startsWith('errado')) return 'E';
+  }
+  return OPTION_LETTERS[index] ?? String(index + 1);
+}
 
 function getCorrectIndex(question: Question | null): number {
   if (!question) return -1;
-  const target = normalize(question.resposta_correta);
-  const idx = question.alternativas.findIndex((a) => normalize(a) === target);
-  if (idx >= 0) return idx;
-  const letterIdx = OPTION_LETTERS.indexOf(question.resposta_correta.trim().toUpperCase().charAt(0));
-  return question.resposta_correta.trim().length === 1 ? letterIdx : -1;
+  const rawTarget = question.resposta_correta.trim();
+  const target = normalize(rawTarget);
+
+  const exactIdx = question.alternativas.findIndex(
+    (a) => normalize(a) === target || a.trim().toLowerCase() === rawTarget.toLowerCase(),
+  );
+  if (exactIdx >= 0) return exactIdx;
+
+  if (isCertoErradoQuestion(question)) {
+    if (target === 'c' || target.startsWith('certo')) {
+      return question.alternativas.findIndex((a) => normalize(a).startsWith('certo'));
+    }
+    if (target === 'e' || target.startsWith('errado')) {
+      return question.alternativas.findIndex((a) => normalize(a).startsWith('errado'));
+    }
+  }
+
+  const letterMatch = rawTarget.match(/^([A-Fa-f])(?:$|\s|[)\].:-])/);
+  if (letterMatch) {
+    const letterIdx = OPTION_LETTERS.indexOf(letterMatch[1].toUpperCase());
+    if (letterIdx >= 0 && letterIdx < question.alternativas.length) return letterIdx;
+  }
+  return -1;
 }
 
 function getQuestionKey(q: Question, fallbackIndex: number): string {
@@ -55,13 +93,18 @@ export default function QuizScreen() {
   const [answers, setAnswers] = useState<Record<string, AnswerState>>({});
 
   const [loadingList, setLoadingList] = useState(true);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showGenerator, setShowGenerator] = useState(false);
 
-  const [difficulty, setDifficulty] = useState<Difficulty>('medio');
-  const [topic, setTopic] = useState('');
+  // Configurações do gerador: persistem entre gerações, navegação entre questões e reaberturas do app
+  const { settings, loaded: settingsLoaded, update: updateSettings } = useGeneratorSettings();
+  const { educationLevel, questionType, board: selectedBoard, difficulty, topic } = settings;
+
   const [error, setError] = useState<{ message: string; network: boolean } | null>(null);
+  // Origem do último erro, para o "Tentar novamente" repetir a ação correta
+  const [errorSource, setErrorSource] = useState<'load' | 'generate'>('load');
 
   const loadSavedQuestions = async (silent = false) => {
     if (!documentId) return;
@@ -72,11 +115,24 @@ export default function QuizScreen() {
     try {
       const accessToken = await getAccessToken();
       const saved = await listDocumentQuestions(apiUrl, documentId, accessToken);
-      setQuestions(saved);
+      setQuestions((prev) => {
+        const prevById = new Map(prev.map((item) => [item.id || item.question_id, item]));
+        return saved.map((item) => {
+          const existing = prevById.get(item.id || item.question_id);
+          return existing
+            ? {
+                ...item,
+                banca: item.banca ?? existing.banca,
+                escolaridade: item.escolaridade ?? existing.escolaridade,
+                tipo: item.tipo ?? existing.tipo,
+              }
+            : item;
+        });
+      });
       updateDocumentQuestionCount(documentId, { count: saved.length });
       if (!silent) {
         if (saved.length > 0) {
-          setActiveIndex(0);
+          setActiveIndex(saved.length - 1);
           setShowGenerator(false);
         } else {
           setShowGenerator(true);
@@ -85,6 +141,7 @@ export default function QuizScreen() {
     } catch (e) {
       if (!silent) {
         const apiError = e instanceof ApiError ? e : null;
+        setErrorSource('load');
         setError({
           message: apiError?.message ?? 'Não foi possível carregar as questões deste documento.',
           network: apiError?.kind === 'network',
@@ -93,6 +150,15 @@ export default function QuizScreen() {
       }
     } finally {
       if (!silent) setLoadingList(false);
+    }
+  };
+
+  const handlePullRefresh = async () => {
+    setManualRefreshing(true);
+    try {
+      await loadSavedQuestions(false);
+    } finally {
+      setManualRefreshing(false);
     }
   };
 
@@ -188,23 +254,32 @@ export default function QuizScreen() {
     scrollRef.current?.scrollTo({ y: 0, animated: true });
   };
 
+  /** Gera uma questão com as configurações atualmente salvas (sem pedir nada de novo ao usuário). */
   const handleGenerate = async () => {
-    if (!documentId || generating) return;
+    if (!documentId || generating || !settingsLoaded) return;
     setGenerating(true);
     setError(null);
+    setErrorSource('generate');
     scrollRef.current?.scrollTo({ y: 0, animated: true });
     try {
       const accessToken = await getAccessToken();
       const created = await generateQuestion(
         apiUrl,
-        { documentId, nivelDificuldade: difficulty, tema: topic },
+        {
+          documentId,
+          dificuldade: difficulty,
+          escolaridade: educationLevel,
+          tipo: questionType,
+          banca: selectedBoard,
+          tema: topic,
+        },
         accessToken,
       );
 
-      const nextCount = questions.length + 1;
-      setQuestions((prev) => [...prev, created]);
-      setActiveIndex(nextCount - 1);
-      updateDocumentQuestionCount(documentId, { count: nextCount });
+      const next = [...questions, created];
+      setQuestions(next);
+      setActiveIndex(next.length - 1);
+      updateDocumentQuestionCount(documentId, { count: next.length });
       setShowGenerator(false);
       haptics.success();
 
@@ -298,6 +373,8 @@ export default function QuizScreen() {
   const currentDifficulty = DIFFICULTIES.find(
     (d) => d.value === (activeQuestion?.nivel_dificuldade ?? difficulty),
   );
+  const currentEducation = EDUCATION_LEVELS.find((e) => e.value === activeQuestion?.escolaridade);
+  const isActiveCertoErrado = isCertoErradoQuestion(activeQuestion);
   const hasNextSaved = activeIndex < questions.length - 1;
   const isDeletingActive = Boolean(
     activeQuestion && deletingId && (deletingId === activeQuestion.id || deletingId === activeQuestion.question_id),
@@ -328,15 +405,36 @@ export default function QuizScreen() {
   const renderFooter = () => {
     if (loadingList) return null;
 
+    // Enquanto gera (de qualquer lugar da tela), o botão principal mostra o progresso
+    if (generating) {
+      return (
+        <FooterInner>
+          <Button label="Gerando questão…" icon="sparkles" loading onPress={handleGenerate} />
+        </FooterInner>
+      );
+    }
+
+    // Painel de configurações aberto (ou documento ainda sem questões)
     if (showGenerator || !activeQuestion) {
       return (
         <FooterInner>
           <Button
-            label={generating ? 'Gerando questão…' : 'Gerar questão com IA'}
+            label={questions.length > 0 ? 'Gerar questão com estas configurações' : 'Gerar questão com IA'}
             icon="sparkles"
-            loading={generating}
+            disabled={!settingsLoaded}
             onPress={handleGenerate}
           />
+          {questions.length > 0 ? (
+            <Button
+              label="Confirmar configurações"
+              variant="secondary"
+              icon="checkmark"
+              onPress={() => {
+                haptics.tap();
+                setShowGenerator(false);
+              }}
+            />
+          ) : null}
         </FooterInner>
       );
     }
@@ -366,16 +464,10 @@ export default function QuizScreen() {
       );
     }
 
+    // Última questão respondida: gera a próxima direto, reaproveitando as configurações salvas
     return (
       <FooterInner>
-        <Button
-          label="Gerar nova questão"
-          icon="sparkles"
-          onPress={() => {
-            setShowGenerator(true);
-            scrollRef.current?.scrollTo({ y: 0, animated: true });
-          }}
-        />
+        <Button label="Gerar nova questão" icon="sparkles" disabled={!settingsLoaded} onPress={handleGenerate} />
       </FooterInner>
     );
   };
@@ -385,31 +477,34 @@ export default function QuizScreen() {
       header={header}
       footer={renderFooter()}
       scrollRef={scrollRef}
-      refreshing={loadingList && questions.length > 0}
-      onRefresh={() => loadSavedQuestions(false)}
+      refreshing={manualRefreshing}
+      onRefresh={handlePullRefresh}
     >
       {/* Barra de navegação entre as questões salvas do documento */}
       {questions.length > 0 ? (
         <DeckBar>
           <DeckHeaderRow>
-            <SectionTitle>Questões do documento ({questions.length})</SectionTitle>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 }}>
+              <SectionTitle style={{ flexShrink: 1 }}>Questões do documento ({questions.length})</SectionTitle>
+              {loadingList ? (
+                <SyncBadge accessibilityRole="progressbar" accessibilityLabel="Atualizando questões">
+                  <DiscreteSpinner size="sm" />
+                  <SyncBadgeText>Sincronizando…</SyncBadgeText>
+                </SyncBadge>
+              ) : null}
+            </View>
             <NewQuestionToggle
-              $active={showGenerator}
+              $active={false}
+              disabled={generating || !settingsLoaded}
               onPress={() => {
-                setShowGenerator((v) => !v);
-                setError(null);
+                haptics.tap();
+                handleGenerate();
               }}
               accessibilityRole="button"
-              accessibilityLabel={showGenerator ? 'Voltar para a questão selecionada' : 'Gerar nova questão'}
+              accessibilityLabel="Gerar nova questão com as configurações atuais"
             >
-              <Ionicons
-                name={showGenerator ? 'close' : 'add'}
-                size={16}
-                color={showGenerator ? theme.colors.onPrimary : theme.colors.primary}
-              />
-              <NewQuestionToggleText $active={showGenerator}>
-                {showGenerator ? 'Fechar gerador' : 'Nova questão'}
-              </NewQuestionToggleText>
+              <Ionicons name="add" size={16} color={theme.colors.primary} />
+              <NewQuestionToggleText $active={false}>Nova questão</NewQuestionToggleText>
             </NewQuestionToggle>
           </DeckHeaderRow>
 
@@ -458,55 +553,101 @@ export default function QuizScreen() {
         </DeckBar>
       ) : null}
 
-      {/* Estado inicial: buscando questões salvas no banco */}
-      {loadingList && questions.length === 0 ? <QuestionSkeleton /> : null}
+      {/* Resumo das configurações em uso + atalho para alterá-las (as novas questões usam estas opções) */}
+      {!loadingList && !showGenerator && questions.length > 0 ? (
+        <SettingsSummaryCard>
+          <SettingsSummaryHeader>
+            <SectionTitle>Configurações em uso</SectionTitle>
+            <SettingsSummarySubtitle>
+              Aplicadas automaticamente ao gerar novas questões.
+            </SettingsSummarySubtitle>
+          </SettingsSummaryHeader>
+          <TagRow>
+            <Tag>
+              <TagText numberOfLines={1} ellipsizeMode="tail">
+                {selectedBoard}
+              </TagText>
+            </Tag>
+            <Tag>
+              <TagText numberOfLines={1} ellipsizeMode="tail">
+                {EDUCATION_LEVELS.find((e) => e.value === educationLevel)?.label}
+              </TagText>
+            </Tag>
+            <Tag>
+              <TagText numberOfLines={1} ellipsizeMode="tail">
+                {QUESTION_TYPES.find((t) => t.value === questionType)?.label}
+              </TagText>
+            </Tag>
+            <Tag>
+              <TagText numberOfLines={1} ellipsizeMode="tail">
+                {DIFFICULTIES.find((d) => d.value === difficulty)?.label}
+              </TagText>
+            </Tag>
+            {topic.trim() ? (
+              <Tag>
+                <TagText numberOfLines={1} ellipsizeMode="tail">
+                  Tema: {topic.trim()}
+                </TagText>
+              </Tag>
+            ) : null}
+          </TagRow>
+          <Button
+            label="Alterar configurações"
+            variant="secondary"
+            icon="options-outline"
+            disabled={generating || !settingsLoaded}
+            onPress={() => {
+              setError(null);
+              setShowGenerator(true);
+              scrollRef.current?.scrollTo({ y: 0, animated: true });
+            }}
+          />
+        </SettingsSummaryCard>
+      ) : null}
 
-      {/* Painel de geração de nova questão */}
+      {/* Estado inicial: buscando questões salvas no banco */}
+      {loadingList && questions.length === 0 ? <QuestionSkeleton mode="fetch" /> : null}
+
+      {/* Gerando a partir da visualização (sem abrir o painel) */}
+      {generating && !showGenerator ? (
+        <QuestionSkeleton
+          mode="generate"
+          questionType={questionType}
+          board={selectedBoard}
+          difficultyLabel={DIFFICULTIES.find((d) => d.value === difficulty)?.label}
+          educationLabel={EDUCATION_LEVELS.find((e) => e.value === educationLevel)?.label}
+        />
+      ) : null}
+
+      {/* Painel de configuração e geração de nova questão */}
       {!loadingList && (showGenerator || questions.length === 0) ? (
         <>
-          <Card>
-            <Row style={{ justifyContent: 'space-between' }}>
-              <Row>
-                <Ionicons name="sparkles" size={18} color={theme.colors.primary} />
-                <SectionTitle>Nova questão com IA</SectionTitle>
-              </Row>
-              {questions.length > 0 ? (
-                <CloseGeneratorLink onPress={() => setShowGenerator(false)} accessibilityRole="button">
-                  <CloseGeneratorText>Ver salvas</CloseGeneratorText>
-                </CloseGeneratorLink>
-              ) : null}
-            </Row>
-
-            <SectionTitle style={{ marginTop: 4 }}>Dificuldade</SectionTitle>
-            <DifficultySelector value={difficulty} onChange={setDifficulty} disabled={generating} />
-
-            <SectionTitle style={{ marginTop: 4 }}>Tema (opcional)</SectionTitle>
-            <TopicInput
-              value={topic}
-              onChangeText={setTopic}
-              placeholder="Ex.: Segurança da informação"
-              placeholderTextColor={theme.colors.textMuted}
-              returnKeyType="done"
-              maxLength={120}
-              editable={!generating}
-              accessibilityLabel="Tema da questão"
-            />
-            <Hint>
-              Cada questão gerada fica salva automaticamente neste documento para você estudar quando quiser.
-            </Hint>
-          </Card>
+          <GeneratorSettingsPanel
+            settings={settings}
+            onChange={updateSettings}
+            disabled={generating || !settingsLoaded}
+            hasQuestions={questions.length > 0}
+            onClose={() => setShowGenerator(false)}
+          />
 
           {generating ? (
-            <QuestionSkeleton />
+            <QuestionSkeleton
+              mode="generate"
+              questionType={questionType}
+              board={selectedBoard}
+              difficultyLabel={DIFFICULTIES.find((d) => d.value === difficulty)?.label}
+              educationLabel={EDUCATION_LEVELS.find((e) => e.value === educationLevel)?.label}
+            />
           ) : questions.length === 0 ? (
-            <EmptyState>
-              <Ionicons name="school-outline" size={44} color={theme.colors.primary} />
-              <EmptyTitle>Nenhuma questão salva ainda</EmptyTitle>
-              <Hint style={{ textAlign: 'center' }}>
-                Escolha a dificuldade acima e toque em “Gerar questão com IA” para criar a primeira questão deste
-                documento.
-              </Hint>
-            </EmptyState>
+            <FadeInView>
+              <EmptyState>
+                <Ionicons name="school-outline" size={44} color={theme.colors.primary} />
+                <EmptyTitle>Nenhuma questão salva ainda</EmptyTitle>
+                <Hint style={{ textAlign: 'center' }}>
+                  Configure a escolaridade, a banca e a dificuldade acima e toque em “Gerar questão com IA”.
+                </Hint>
+              </EmptyState>
+            </FadeInView>
           ) : null}
         </>
       ) : null}
@@ -514,26 +655,49 @@ export default function QuizScreen() {
       {error ? (
         <ErrorBanner
           message={error.message}
-          onRetry={showGenerator ? handleGenerate : () => loadSavedQuestions(false)}
+          onRetry={errorSource === 'generate' ? handleGenerate : () => loadSavedQuestions(false)}
           onOpenSettings={error.network ? () => router.push('/settings') : undefined}
         />
       ) : null}
 
       {/* Visualização da questão ativa */}
-      {!loadingList && !showGenerator && activeQuestion ? (
-        <View style={{ gap: 16 }}>
+      {!loadingList && !showGenerator && activeQuestion && !generating ? (
+        <FadeInView key={activeKey} style={{ gap: 16 }}>
           <QuestionTopBar>
-            <TagRow style={{ flex: 1 }}>
+            <TagRow style={{ flex: 1, minWidth: 180 }}>
               <PositionBadge>
-                <PositionBadgeText>
+                <PositionBadgeText numberOfLines={1}>
                   Questão {activeIndex + 1} de {questions.length}
                 </PositionBadgeText>
               </PositionBadge>
 
+              {activeQuestion.banca && activeQuestion.banca !== 'Padrão' ? (
+                <Tag>
+                  <Ionicons name="business-outline" size={13} color={theme.colors.primary} />
+                  <TagText numberOfLines={1} ellipsizeMode="tail">
+                    {activeQuestion.banca}
+                  </TagText>
+                </Tag>
+              ) : null}
+
+              {currentEducation ? (
+                <Tag>
+                  <Ionicons name={currentEducation.icon} size={13} color={theme.colors.primary} />
+                  <TagText numberOfLines={1}>{currentEducation.label}</TagText>
+                </Tag>
+              ) : null}
+
               {currentDifficulty ? (
                 <Tag>
                   <Ionicons name={currentDifficulty.icon} size={14} color={theme.colors.primary} />
-                  <TagText>{currentDifficulty.label}</TagText>
+                  <TagText numberOfLines={1}>{currentDifficulty.label}</TagText>
+                </Tag>
+              ) : null}
+
+              {isActiveCertoErrado ? (
+                <Tag>
+                  <Ionicons name="checkmark-done-outline" size={14} color={theme.colors.primary} />
+                  <TagText numberOfLines={1}>Certo / Errado</TagText>
                 </Tag>
               ) : null}
             </TagRow>
@@ -546,7 +710,10 @@ export default function QuizScreen() {
               accessibilityLabel="Apagar esta questão"
             >
               {isDeletingActive ? (
-                <ActivityIndicator size="small" color={theme.colors.danger} />
+                <>
+                  <DiscreteSpinner size="sm" color={theme.colors.danger} />
+                  <DeleteQuestionText>Apagando…</DeleteQuestionText>
+                </>
               ) : (
                 <>
                   <Ionicons name="trash-outline" size={16} color={theme.colors.danger} />
@@ -556,16 +723,16 @@ export default function QuizScreen() {
             </DeleteQuestionButton>
           </QuestionTopBar>
 
-          <Statement selectable accessibilityRole="header">
-            {activeQuestion.enunciado}
+          <Statement accessibilityRole="header">
+            {activeQuestion.enunciado.trim()}
           </Statement>
 
           <View style={{ gap: 10 }} accessibilityRole="radiogroup">
             {activeQuestion.alternativas.map((alt, i) => (
               <OptionItem
                 key={`${i}-${alt}`}
-                letter={OPTION_LETTERS[i] ?? String(i + 1)}
-                text={alt}
+                letter={getOptionBadgeLetter(activeQuestion, i)}
+                text={isActiveCertoErrado ? alt.trim() : stripLeadingLetter(alt)}
                 status={statusFor(i)}
                 disabled={activeAnswer.confirmed || isDeletingActive}
                 onPress={() => selectOption(i)}
@@ -574,20 +741,22 @@ export default function QuizScreen() {
           </View>
 
           {activeAnswer.confirmed ? (
-            <View style={{ gap: 12 }}>
+            <FadeInView style={{ gap: 12 }}>
               <Result $ok={isCorrect} accessibilityLiveRegion="polite">
                 <Ionicons
                   name={isCorrect ? 'happy-outline' : 'sad-outline'}
                   size={26}
                   color={isCorrect ? theme.colors.success : theme.colors.danger}
                 />
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <ResultText $ok={isCorrect}>
                     {isCorrect ? 'Resposta correta!' : 'Resposta incorreta'}
                   </ResultText>
                   {!isCorrect && correctIndex >= 0 ? (
                     <CorrectAnswerHint>
-                      Alternativa correta: letra {OPTION_LETTERS[correctIndex]}
+                      {isActiveCertoErrado
+                        ? `Gabarito: ${activeQuestion.alternativas[correctIndex]?.trim()}`
+                        : `Alternativa correta: letra ${getOptionBadgeLetter(activeQuestion, correctIndex)}`}
                     </CorrectAnswerHint>
                   ) : null}
                 </View>
@@ -607,10 +776,10 @@ export default function QuizScreen() {
                     <Ionicons name="bulb-outline" size={20} color={theme.colors.primary} />
                     <SectionTitle>Explicação</SectionTitle>
                   </Row>
-                  <Explanation selectable>{activeQuestion.comentario}</Explanation>
+                  <Explanation>{activeQuestion.comentario.trim()}</Explanation>
                 </Card>
               ) : null}
-            </View>
+            </FadeInView>
           ) : null}
 
           {questions.length > 1 ? (
@@ -644,7 +813,7 @@ export default function QuizScreen() {
               </StepNavButton>
             </StepNavRow>
           ) : null}
-        </View>
+        </FadeInView>
       ) : null}
     </Screen>
   );
@@ -674,20 +843,57 @@ const DeckBar = styled.View`
   background-color: ${({ theme }) => theme.colors.surface};
 `;
 
+const SettingsSummaryCard = styled.View`
+  gap: 12px;
+  padding: 16px;
+  border-radius: ${({ theme }) => theme.radius.lg}px;
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.border};
+  background-color: ${({ theme }) => theme.colors.surface};
+`;
+
+const SettingsSummaryHeader = styled.View`
+  gap: 2px;
+`;
+
+const SettingsSummarySubtitle = styled.Text`
+  font-size: 13px;
+  line-height: 18px;
+  color: ${({ theme }) => theme.colors.textMuted};
+`;
+
 const DeckHeaderRow = styled.View`
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 `;
 
-const NewQuestionToggle = styled.Pressable<{ $active: boolean }>`
+const SyncBadge = styled.View`
   flex-direction: row;
   align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: ${({ theme }) => theme.radius.pill}px;
+  background-color: ${({ theme }) => theme.colors.surfaceAlt};
+`;
+
+const SyncBadgeText = styled.Text`
+  font-size: 12px;
+  font-weight: 700;
+  color: ${({ theme }) => theme.colors.primary};
+`;
+
+const NewQuestionToggle = styled.Pressable<{ $active: boolean; disabled?: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  min-height: 36px;
   gap: 4px;
   padding: 6px 12px;
   border-radius: ${({ theme }) => theme.radius.pill}px;
   background-color: ${({ theme, $active }) => ($active ? theme.colors.primary : theme.colors.primarySoft)};
+  opacity: ${({ disabled }) => (disabled ? 0.5 : 1)};
 `;
 
 const NewQuestionToggleText = styled.Text<{ $active: boolean }>`
@@ -737,27 +943,6 @@ const QuestionPillText = styled.Text<{ $active: boolean; $answered: boolean; $co
         : theme.colors.text};
 `;
 
-const CloseGeneratorLink = styled.Pressable`
-  padding: 4px 8px;
-`;
-
-const CloseGeneratorText = styled.Text`
-  font-size: 13px;
-  font-weight: 700;
-  color: ${({ theme }) => theme.colors.primary};
-`;
-
-const TopicInput = styled.TextInput`
-  min-height: 48px;
-  padding: 0 14px;
-  font-size: 16px;
-  border-radius: ${({ theme }) => theme.radius.md}px;
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.border};
-  background-color: ${({ theme }) => theme.colors.background};
-  color: ${({ theme }) => theme.colors.text};
-`;
-
 const Hint = styled.Text`
   font-size: 13px;
   line-height: 18px;
@@ -778,7 +963,8 @@ const EmptyTitle = styled.Text`
 
 const QuestionTopBar = styled.View`
   flex-direction: row;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 `;
@@ -791,12 +977,14 @@ const TagRow = styled.View`
 `;
 
 const PositionBadge = styled.View`
+  max-width: 100%;
   padding: 6px 12px;
   border-radius: ${({ theme }) => theme.radius.pill}px;
   background-color: ${({ theme }) => theme.colors.surfaceAlt};
 `;
 
 const PositionBadgeText = styled.Text`
+  flex-shrink: 1;
   font-size: 13px;
   font-weight: 800;
   color: ${({ theme }) => theme.colors.text};
@@ -805,6 +993,7 @@ const PositionBadgeText = styled.Text`
 const Tag = styled.View`
   flex-direction: row;
   align-items: center;
+  max-width: 100%;
   gap: 6px;
   padding: 6px 12px;
   border-radius: ${({ theme }) => theme.radius.pill}px;
@@ -812,6 +1001,7 @@ const Tag = styled.View`
 `;
 
 const TagText = styled.Text`
+  flex-shrink: 1;
   font-size: 13px;
   font-weight: 700;
   color: ${({ theme }) => theme.colors.primary};
@@ -820,6 +1010,7 @@ const TagText = styled.Text`
 const DeleteQuestionButton = styled.Pressable`
   flex-direction: row;
   align-items: center;
+  min-height: 36px;
   gap: 5px;
   padding: 6px 12px;
   border-radius: ${({ theme }) => theme.radius.pill}px;
@@ -833,6 +1024,7 @@ const DeleteQuestionText = styled.Text`
 `;
 
 const Statement = styled.Text`
+  width: 100%;
   font-size: 19px;
   line-height: 28px;
   font-weight: 700;
@@ -863,8 +1055,9 @@ const CorrectAnswerHint = styled.Text`
 const RetryQuestionButton = styled.Pressable`
   flex-direction: row;
   align-items: center;
+  min-height: 36px;
   gap: 4px;
-  padding: 6px 10px;
+  padding: 6px 12px;
   border-radius: ${({ theme }) => theme.radius.pill}px;
   background-color: ${({ theme }) => theme.colors.surface};
 `;
@@ -882,6 +1075,7 @@ const Row = styled.View`
 `;
 
 const Explanation = styled.Text`
+  width: 100%;
   font-size: 16px;
   line-height: 24px;
   color: ${({ theme }) => theme.colors.text};
@@ -896,8 +1090,11 @@ const StepNavRow = styled.View`
 `;
 
 const StepNavButton = styled.Pressable<{ disabled?: boolean }>`
+  flex: 1;
   flex-direction: row;
   align-items: center;
+  justify-content: center;
+  min-height: 46px;
   gap: 6px;
   padding: 10px 14px;
   border-radius: ${({ theme }) => theme.radius.md}px;
